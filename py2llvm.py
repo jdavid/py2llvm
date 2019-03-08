@@ -2,9 +2,9 @@
 Useful links:
 
 - https://docs.python.org/3.6/library/ast.html#abstract-grammar
+- http://llvmlite.pydata.org/
 - https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/
 - https://llvm.org/docs/LangRef.html
-- http://llvmlite.pydata.org/
 """
 
 import ast
@@ -201,10 +201,27 @@ class NodeVisitor(BaseNodeVisitor):
     def exit_Add(self, node, parent, *args):
         return node
 
+    def exit_Sub(self, node, parent, *args):
+        return node
+
+    def exit_Mult(self, node, parent, *args):
+        return node
+
+    def exit_Div(self, node, parent, *args):
+        return node
+
     def exit_BinOp(self, node, parent, left, op, right):
-        if type(op) is ast.Add:
-            return self.builder.fadd(left, right)#, name="res")
-        raise NotImplementedError()
+        f = {
+            ast.Add: self.builder.fadd,
+            ast.Sub: self.builder.fsub,
+            ast.Mult: self.builder.fmul,
+            ast.Div: self.builder.fdiv,
+        }.get(type(op))
+
+        if f is None:
+            raise NotImplementedError(f'{node.op} operator not implemented')
+
+        return f(left, right)
 
     def enter_Assign(self, node, parent):
         """
@@ -241,7 +258,8 @@ source = """
 def f() -> float:
     a = 2
     b = 4
-    c = a + b
+    c = (a + b) * 2 - 3
+    c = c / 3
     return c
 """
 
