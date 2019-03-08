@@ -3,8 +3,9 @@ from run import run
 
 
 def test_no_args():
-    module = str(py2llvm(open(f'test_source.py').read()))
+    module = str(py2llvm(open(f'source.py').read()))
 
-    from test_source import f, g
-    assert f() == run(module, 'f')
-    assert g() == run(module, 'g')
+    import source
+    fnames = 'ret_const', 'ret_var', 'sum'
+    for fname in fnames:
+        assert getattr(source, fname)() == run(module, fname)

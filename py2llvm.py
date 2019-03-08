@@ -1,10 +1,10 @@
 """
 Useful links:
 
+- https://docs.python.org/3.6/library/ast.html#abstract-grammar
 - https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/
 - https://llvm.org/docs/LangRef.html
 - http://llvmlite.pydata.org/
-- https://docs.python.org/3.6/library/ast.html#abstract-grammar
 """
 
 import ast
@@ -19,10 +19,6 @@ types = {
     'float': double,
     'int': int64,
 }
-
-def print_fields(node):
-    for field in ast.iter_fields(node):
-        print(f'- {field}')
 
 
 class BaseNodeVisitor:
@@ -50,6 +46,9 @@ class BaseNodeVisitor:
         NodeVisitor().traverse(node)
     """
 
+    def __init__(self):
+        self.depth = 0
+
     @classmethod
     def get_fields(cls, node):
         fields = {
@@ -72,34 +71,53 @@ class BaseNodeVisitor:
                 pass
 
     def traverse(self, node, parent=None):
+        # Debug
+        if node._fields:
+            fields = ' '.join(f'{k}=' for k, v in ast.iter_fields(node))
+            print(self.depth * ' '  + f'<{node.__class__.__name__} {fields}>')
+        else:
+            print(self.depth * ' '  + f'<{node.__class__.__name__}>')
+
+        self.depth += 1
+
         # Enter
         self.enter(node, parent)
+
         # Traverse
-        value = None
-        for field, value in self.iter_fields(node):
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, ast.AST):
-                        value = self.traverse(item, node)
-            elif isinstance(value, ast.AST):
-                value = self.traverse(value, node)
+        args = []
+        for name, field in self.iter_fields(node):
+            if isinstance(field, list):
+                tmp = [self.traverse(x, node) for x in field if isinstance(x, ast.AST)]
+                args.append(tmp)
+            elif isinstance(field, ast.AST):
+                tmp = self.traverse(field, node)
+                args.append(tmp)
+
+        # Debug
+        self.depth -= 1
+        if args:
+            tmp = ' '.join(repr(x) for x in args)
+            print(self.depth * ' '  + f'</{node.__class__.__name__} {tmp}>')
+        else:
+            print(self.depth * ' '  + f'</{node.__class__.__name__}>')
+
         # Exit
-        return self.exit(node, parent, value)
+        return self.exit(node, parent, *args)
 
     def enter(self, node, parent):
         method = 'enter_' + node.__class__.__name__
         visitor = getattr(self, method, self.enter_generic)
         return visitor(node, parent)
 
-    def exit(self, node, parent, value):
+    def exit(self, node, parent, *args):
         method = 'exit_' + node.__class__.__name__
         visitor = getattr(self, method, self.exit_generic)
-        return visitor(node, parent, value)
+        return visitor(node, parent, *args)
 
     def enter_generic(self, node, parent):
         """Called if no explicit enter function exists for a node."""
 
-    def exit_generic(self, node, parent, value):
+    def exit_generic(self, node, parent, *args):
         """Called if no explicit exit function exists for a node."""
 
 
@@ -111,21 +129,18 @@ class NodeVisitor(BaseNodeVisitor):
     rtype = None
     local_ns = None
 
-    def enter_generic(self, node, parent):
-        print(f'ENTER {node}')
-        #print(node.__class__.__mro__)
-        #print_fields(node)
-        #print()
+    def print(self, line):
+        print(self.depth * ' ' + line)
 
-    def exit_generic(self, node, parent, value):
-        print(f'EXIT  {node}')
+    def debug(self, node, parent):
+        for name, field in ast.iter_fields(node):
+            self.print(f'- {name} {field}')
 
     def enter_Module(self, node, parent):
         """
         Module(stmt* body)
         """
         assert parent is None
-        self.enter_generic(node, parent)
         self.module = ir.Module()
 
     def enter_FunctionDef(self, node, parent):
@@ -134,7 +149,6 @@ class NodeVisitor(BaseNodeVisitor):
                     stmt* body, expr* decorator_list, expr? returns)
         """
         assert type(parent) is ast.Module
-        self.enter_generic(node, parent)
 
         # Decorators not supported
         assert not node.decorator_list
@@ -156,49 +170,53 @@ class NodeVisitor(BaseNodeVisitor):
         arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
                      arg? kwarg, expr* defaults)
         """
-        self.enter_generic(node, parent)
-
         if any([node.args, node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
             raise NotImplementedError('functions with arguments not supported')
 
         self.args = ()
 
-    def exit_arguments(self, node, parent, value):
-        self.exit_generic(node, parent, value)
+    def exit_arguments(self, node, parent, *args):
         # TODO Cache function types, do not generate twice the same
         ftype = ir.FunctionType(self.rtype, self.args)
         function = ir.Function(self.module, ftype, parent.name)
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
-    def exit_Num(self, node, parent, value):
+    def exit_Num(self, node, parent, *args):
         """
         Num(object n)
         """
         return ir.Constant(double, node.n) # TODO Type inference
 
-    def exit_Name(self, node, parent, value):
+    def exit_Name(self, node, parent, *args):
         """
         Name(identifier id, expr_context ctx)
         """
-        self.exit_generic(node, parent, value)
+        name = node.id
         if type(node.ctx) is ast.Load:
-            return self.local_ns[node.id]
+            return self.local_ns[name]
+        if type(node.ctx) is ast.Store:
+            return name
+
+    def exit_Add(self, node, parent, *args):
+        return node
+
+    def exit_BinOp(self, node, parent, left, op, right):
+        if type(op) is ast.Add:
+            return self.builder.fadd(left, right)#, name="res")
+        raise NotImplementedError()
 
     def enter_Assign(self, node, parent):
         """
         Assign(expr* targets, expr value)
         """
-        self.enter_generic(node, parent)
         assert len(node.targets) == 1
         assert type(node.targets[0]) is ast.Name
         assert type(node.targets[0].ctx) is ast.Store
 
-    def exit_Assign(self, node, parent, value):
-        self.exit_generic(node, parent, value)
-
-        name = node.targets[0].id
-        assert type(value) is ir.values.Constant
+    def exit_Assign(self, node, parent, name, value):
+        name = name[0]
+        #assert type(value) is ir.values.Constant
         # LLVM does not support simple assignment to local variables.
         self.local_ns[name] = value
 
@@ -206,29 +224,33 @@ class NodeVisitor(BaseNodeVisitor):
         """
         Return(expr? value)
         """
-        self.exit_generic(node, parent, value)
         return self.builder.ret(value)
 
 
-def py2llvm(source):
-    node = ast.parse(source)
+def node_to_llvm(node):
     visitor = NodeVisitor()
     visitor.traverse(node)
     return visitor.module
 
+def py2llvm(node):
+    node = ast.parse(node)
+    return node_to_llvm(node)
 
 
 source = """
 def f() -> float:
     a = 2
-    return a
+    b = 4
+    c = a + b
+    return c
 """
 
 if __name__ == '__main__':
-    module = py2llvm(source)
-    module = str(module)
     print('====== Source ======')
     print(source)
+    print('====== Debug ======')
+    module = py2llvm(source)
+    module = str(module)
     print('====== IR ======')
     print(module)
     print('====== Output ======')
