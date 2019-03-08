@@ -1,6 +1,15 @@
-import ast
+"""
+Useful links:
 
+- https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/
+- https://llvm.org/docs/LangRef.html
+- http://llvmlite.pydata.org/
+- https://docs.python.org/3.6/library/ast.html#abstract-grammar
+"""
+
+import ast
 from llvmlite import ir
+from run import run
 
 
 double = ir.DoubleType()
@@ -100,6 +109,7 @@ class NodeVisitor(BaseNodeVisitor):
     args = None
     builder = None
     rtype = None
+    local_ns = None
 
     def enter_generic(self, node, parent):
         print(f'ENTER {node}')
@@ -134,10 +144,12 @@ class NodeVisitor(BaseNodeVisitor):
         # explicitely given with a function annotation
         assert node.returns is not None, 'return type inference is not supported'
         assert type(node.returns) is ast.Name, 'only name suported for now'
-        assert type(node.returns.ctx) is ast.Load
-        self.rtype = types[node.returns.id]
+        assert type(node.returns.ctx) is ast.Load, f'unexpected Name.ctx={node.returns.ctx}'
 
+        # Initialize function context
+        self.rtype = types[node.returns.id]
         self.builder = ir.IRBuilder()
+        self.local_ns = {}
 
     def enter_arguments(self, node, parent):
         """
@@ -159,40 +171,65 @@ class NodeVisitor(BaseNodeVisitor):
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
-    def exit_Return(self, node, parent, value):
-        """
-        Return(expr? value)
-        """
-        self.exit_generic(node, parent, value)
-        self.builder.ret(value)
-
-    def enter_Name(self, node, parent):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        assert type(node.ctx) is ast.Load
-        self.enter_generic(node, parent)
-        print('**', node.id)
-
     def exit_Num(self, node, parent, value):
         """
         Num(object n)
         """
         return ir.Constant(double, node.n) # TODO Type inference
 
+    def exit_Name(self, node, parent, value):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        self.exit_generic(node, parent, value)
+        if type(node.ctx) is ast.Load:
+            return self.local_ns[node.id]
+
+    def enter_Assign(self, node, parent):
+        """
+        Assign(expr* targets, expr value)
+        """
+        self.enter_generic(node, parent)
+        assert len(node.targets) == 1
+        assert type(node.targets[0]) is ast.Name
+        assert type(node.targets[0].ctx) is ast.Store
+
+    def exit_Assign(self, node, parent, value):
+        self.exit_generic(node, parent, value)
+
+        name = node.targets[0].id
+        assert type(value) is ir.values.Constant
+        # LLVM does not support simple assignment to local variables.
+        self.local_ns[name] = value
+
+    def exit_Return(self, node, parent, value):
+        """
+        Return(expr? value)
+        """
+        self.exit_generic(node, parent, value)
+        return self.builder.ret(value)
+
 
 def py2llvm(source):
     node = ast.parse(source)
     visitor = NodeVisitor()
     visitor.traverse(node)
-    print(visitor.module)
+    return visitor.module
 
 
 
-simple = """
+source = """
 def f() -> float:
-    return 42
+    a = 2
+    return a
 """
 
 if __name__ == '__main__':
-    py2llvm(simple)
+    module = py2llvm(source)
+    module = str(module)
+    print('====== Source ======')
+    print(source)
+    print('====== IR ======')
+    print(module)
+    print('====== Output ======')
+    print(run(module, 'f'))
