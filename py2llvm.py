@@ -16,26 +16,32 @@ double = ir.DoubleType()
 int64 = ir.IntType(64)
 
 types = {
-    'float': double,
-    'int': int64,
+    float: double,
+    int: int64,
 }
 
 
 class BaseNodeVisitor:
     """
-    The ast.NodeVisitor class is not very useful because:
+    The ast.NodeVisitor class traverses the AST and calls user defined
+    callbacks when entering a node.
 
-    - It doesn't keep context
-    - It visits the node only once
+    Here we do the same thing but:
 
-    Here we fix these problems.
+    - Callback as well when exiting the node
+    - Callback as well after traversing an attribute
+    - Pass the parent node to the callback
+    - Pass the value of the attribute to the attribute callback
+    - Pass the values of all the attributes to the exit callback
 
-    Override this class and define the following as you need:
+    Override this class and define the callbacks you need:
 
-    - def enter_<classname>(node, parent)
-    - def exit_<classname>(node, parent, value)
-    - def enter_generic(node, parent)
-    - def exit_generic(node, parent, value)
+    - def <classname>_enter(node, parent)
+    - def <classname>_<attribute>(node, parent, value)
+    - def <classname>_exit(node, parent, *args)
+    - def default_enter(node, parent)
+    - def default_<attribute>(node, parent, value)
+    - def default_exit(node, parent, *args)
 
     Call using traverse:
 
@@ -52,10 +58,8 @@ class BaseNodeVisitor:
     @classmethod
     def get_fields(cls, node):
         fields = {
-            # Do not traverse returns
-            ast.FunctionDef: ('args', 'body', 'decorator_list'),
-            # Traverse returns before body
-            #ast.FunctionDef: ('args', 'returns', 'body', 'decorator_list'),
+            # returns before body (and after args)
+            ast.FunctionDef: ('name', 'args', 'returns', 'body', 'decorator_list'),
             # Do not traverse ctx
             ast.Name: (),
         }
@@ -71,54 +75,55 @@ class BaseNodeVisitor:
                 pass
 
     def traverse(self, node, parent=None):
-        # Debug
-        if node._fields:
-            fields = ' '.join(f'{k}=' for k, v in ast.iter_fields(node))
-            print(self.depth * ' '  + f'<{node.__class__.__name__} {fields}>')
-        else:
-            print(self.depth * ' '  + f'<{node.__class__.__name__}>')
-
-        self.depth += 1
-
         # Enter
-        self.enter(node, parent)
+        self.callback('enter', node, parent)
+        self.depth += 1
 
         # Traverse
         args = []
         for name, field in self.iter_fields(node):
             if isinstance(field, list):
-                tmp = [self.traverse(x, node) for x in field if isinstance(x, ast.AST)]
-                args.append(tmp)
+                value = [self.traverse(x, node) for x in field if isinstance(x, ast.AST)]
             elif isinstance(field, ast.AST):
-                tmp = self.traverse(field, node)
-                args.append(tmp)
+                value = self.traverse(field, node)
+            else:
+                value = field
 
-        # Debug
-        self.depth -= 1
-        if args:
-            tmp = ' '.join(repr(x) for x in args)
-            print(self.depth * ' '  + f'</{node.__class__.__name__} {tmp}>')
-        else:
-            print(self.depth * ' '  + f'</{node.__class__.__name__}>')
+            self.callback(name, node, parent, value)
+            args.append(value)
 
         # Exit
-        return self.exit(node, parent, *args)
+        self.depth -= 1
+        return self.callback('exit', node, parent, *args)
 
-    def enter(self, node, parent):
-        method = 'enter_' + node.__class__.__name__
-        visitor = getattr(self, method, self.enter_generic)
-        return visitor(node, parent)
+    def callback(self, event, node, parent, *args):
+        method = f'{node.__class__.__name__}_{event}'
+        cb = getattr(self, method, None)
+        if cb is None:
+            method = f'default_{event}'
+            cb = getattr(self, method, None)
 
-    def exit(self, node, parent, *args):
-        method = 'exit_' + node.__class__.__name__
-        visitor = getattr(self, method, self.exit_generic)
-        return visitor(node, parent, *args)
+        # Debug
+        name = node.__class__.__name__
+        if event == 'enter':
+            if node._fields:
+                attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
+                print(self.depth * ' '  + f'<{name} {attrs}>')
+            else:
+                print(self.depth * ' '  + f'<{name}>')
+        elif event == 'exit':
+            print(self.depth * ' '  + f'</{name}>')
+#           if args:
+#               attrs = ' '.join(repr(x) for x in args)
+#               print(self.depth * ' '  + f'</{name} {attrs}>')
+#           else:
+#               print(self.depth * ' '  + f'</{name}>')
+        else:
+            attrs = ' '.join([repr(x) for x in args])
+            print(self.depth * ' '  + f'.{event}={attrs}')
 
-    def enter_generic(self, node, parent):
-        """Called if no explicit enter function exists for a node."""
-
-    def exit_generic(self, node, parent, *args):
-        """Called if no explicit exit function exists for a node."""
+        # Call
+        return cb(node, parent, *args) if cb is not None else None
 
 
 class NodeVisitor(BaseNodeVisitor):
@@ -136,14 +141,14 @@ class NodeVisitor(BaseNodeVisitor):
         for name, field in ast.iter_fields(node):
             self.print(f'- {name} {field}')
 
-    def enter_Module(self, node, parent):
+    def Module_enter(self, node, parent):
         """
         Module(stmt* body)
         """
         assert parent is None
         self.module = ir.Module()
 
-    def enter_FunctionDef(self, node, parent):
+    def FunctionDef_enter(self, node, parent):
         """
         FunctionDef(identifier name, arguments args,
                     stmt* body, expr* decorator_list, expr? returns)
@@ -157,15 +162,14 @@ class NodeVisitor(BaseNodeVisitor):
         # We don't support type inference yet, the return type must be
         # explicitely given with a function annotation
         assert node.returns is not None, 'return type inference is not supported'
-        assert type(node.returns) is ast.Name, 'only name suported for now'
-        assert type(node.returns.ctx) is ast.Load, f'unexpected Name.ctx={node.returns.ctx}'
 
         # Initialize function context
-        self.rtype = types[node.returns.id]
         self.builder = ir.IRBuilder()
-        self.local_ns = {}
+        self.local_ns = {
+            'float': float,
+        }
 
-    def enter_arguments(self, node, parent):
+    def arguments_enter(self, node, parent):
         """
         arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
                      arg? kwarg, expr* defaults)
@@ -175,20 +179,21 @@ class NodeVisitor(BaseNodeVisitor):
 
         self.args = ()
 
-    def exit_arguments(self, node, parent, *args):
+    def FunctionDef_returns(self, node, parent, value):
+        self.rtype = types[value]
         # TODO Cache function types, do not generate twice the same
         ftype = ir.FunctionType(self.rtype, self.args)
-        function = ir.Function(self.module, ftype, parent.name)
+        function = ir.Function(self.module, ftype, node.name)
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
-    def exit_Num(self, node, parent, *args):
+    def Num_exit(self, node, parent, *args):
         """
         Num(object n)
         """
         return ir.Constant(double, node.n) # TODO Type inference
 
-    def exit_Name(self, node, parent, *args):
+    def Name_exit(self, node, parent, *args):
         """
         Name(identifier id, expr_context ctx)
         """
@@ -198,19 +203,19 @@ class NodeVisitor(BaseNodeVisitor):
         if type(node.ctx) is ast.Store:
             return name
 
-    def exit_Add(self, node, parent, *args):
+    def Add_exit(self, node, parent, *args):
         return node
 
-    def exit_Sub(self, node, parent, *args):
+    def Sub_exit(self, node, parent, *args):
         return node
 
-    def exit_Mult(self, node, parent, *args):
+    def Mult_exit(self, node, parent, *args):
         return node
 
-    def exit_Div(self, node, parent, *args):
+    def Div_exit(self, node, parent, *args):
         return node
 
-    def exit_BinOp(self, node, parent, left, op, right):
+    def BinOp_exit(self, node, parent, left, op, right):
         f = {
             ast.Add: self.builder.fadd,
             ast.Sub: self.builder.fsub,
@@ -223,7 +228,7 @@ class NodeVisitor(BaseNodeVisitor):
 
         return f(left, right)
 
-    def enter_Assign(self, node, parent):
+    def Assign_enter(self, node, parent):
         """
         Assign(expr* targets, expr value)
         """
@@ -231,13 +236,13 @@ class NodeVisitor(BaseNodeVisitor):
         assert type(node.targets[0]) is ast.Name
         assert type(node.targets[0].ctx) is ast.Store
 
-    def exit_Assign(self, node, parent, name, value):
+    def Assign_exit(self, node, parent, name, value):
         name = name[0]
         #assert type(value) is ir.values.Constant
         # LLVM does not support simple assignment to local variables.
         self.local_ns[name] = value
 
-    def exit_Return(self, node, parent, value):
+    def Return_exit(self, node, parent, value):
         """
         Return(expr? value)
         """
