@@ -8,4 +8,5 @@ def test_no_args():
     import source
     fnames = 'ret_const', 'ret_var', 'ops'
     for fname in fnames:
-        assert getattr(source, fname)() == run(module, fname)
+        expected = getattr(source, fname)()
+        assert expected == run(module, fname)

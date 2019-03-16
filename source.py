@@ -2,12 +2,12 @@ def ret_const() -> float:
     return 42
 
 def ret_var() -> float:
-    a = 42
+    a: float = 42
     return a
 
 def ops() -> float:
-    a = 2
-    b = 4
-    c = (a + b) * 2 - 3
-    c = c / 3
+    a: int = 2
+    b: int = 4
+    c: int = (a + b) * 2 - 3
+    c: int = c / 3
     return c

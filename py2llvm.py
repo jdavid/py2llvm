@@ -7,7 +7,11 @@ Useful links:
 - https://llvm.org/docs/LangRef.html
 """
 
+# Standard Library
+import argparse
 import ast
+import operator
+
 from llvmlite import ir
 from run import run
 
@@ -52,7 +56,8 @@ class BaseNodeVisitor:
         NodeVisitor().traverse(node)
     """
 
-    def __init__(self):
+    def __init__(self, debug):
+        self.debug = debug
         self.depth = 0
 
     @classmethod
@@ -104,23 +109,24 @@ class BaseNodeVisitor:
             cb = getattr(self, method, None)
 
         # Debug
-        name = node.__class__.__name__
-        if event == 'enter':
-            if node._fields:
-                attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
-                print(self.depth * ' '  + f'<{name} {attrs}>')
+        if self.debug:
+            name = node.__class__.__name__
+            if event == 'enter':
+                if node._fields:
+                    attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
+                    print(self.depth * ' '  + f'<{name} {attrs}>')
+                else:
+                    print(self.depth * ' '  + f'<{name}>')
+            elif event == 'exit':
+                print(self.depth * ' '  + f'</{name}>')
+#               if args:
+#                   attrs = ' '.join(repr(x) for x in args)
+#                   print(self.depth * ' '  + f'</{name} {attrs}>')
+#               else:
+#                   print(self.depth * ' '  + f'</{name}>')
             else:
-                print(self.depth * ' '  + f'<{name}>')
-        elif event == 'exit':
-            print(self.depth * ' '  + f'</{name}>')
-#           if args:
-#               attrs = ' '.join(repr(x) for x in args)
-#               print(self.depth * ' '  + f'</{name} {attrs}>')
-#           else:
-#               print(self.depth * ' '  + f'</{name}>')
-        else:
-            attrs = ' '.join([repr(x) for x in args])
-            print(self.depth * ' '  + f'.{event}={attrs}')
+                attrs = ' '.join([repr(x) for x in args])
+                print(self.depth * ' '  + f'.{event}={attrs}')
 
         # Call
         return cb(node, parent, *args) if cb is not None else None
@@ -131,8 +137,9 @@ class NodeVisitor(BaseNodeVisitor):
     module = None
     args = None
     builder = None
-    rtype = None
+    rtype = None # Type of the return value
     local_ns = None
+    ltype = None # Type of the local variable
 
     def print(self, line):
         print(self.depth * ' ' + line)
@@ -167,6 +174,7 @@ class NodeVisitor(BaseNodeVisitor):
         self.builder = ir.IRBuilder()
         self.local_ns = {
             'float': float,
+            'int': int,
         }
 
     def arguments_enter(self, node, parent):
@@ -180,18 +188,18 @@ class NodeVisitor(BaseNodeVisitor):
         self.args = ()
 
     def FunctionDef_returns(self, node, parent, value):
-        self.rtype = types[value]
+        self.rtype = value
         # TODO Cache function types, do not generate twice the same
-        ftype = ir.FunctionType(self.rtype, self.args)
+        ftype = ir.FunctionType(types[self.rtype], self.args)
         function = ir.Function(self.module, ftype, node.name)
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
-    def Num_exit(self, node, parent, *args):
+    def Num_exit(self, node, parent, value):
         """
         Num(object n)
         """
-        return ir.Constant(double, node.n) # TODO Type inference
+        return value
 
     def Name_exit(self, node, parent, *args):
         """
@@ -216,17 +224,48 @@ class NodeVisitor(BaseNodeVisitor):
         return node
 
     def BinOp_exit(self, node, parent, left, op, right):
-        f = {
-            ast.Add: self.builder.fadd,
-            ast.Sub: self.builder.fsub,
-            ast.Mult: self.builder.fmul,
-            ast.Div: self.builder.fdiv,
-        }.get(type(op))
+        ast2op = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+        }
+        py_op = ast2op.get(op.__class__)
+        if py_op is None:
+            raise NotImplementedError(
+                f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+        return py_op(left, right)
 
-        if f is None:
-            raise NotImplementedError(f'{node.op} operator not implemented')
+#       d = {
+#           (ast.Add,  int  ): self.builder.add,
+#           (ast.Sub,  int  ): self.builder.sub,
+#           (ast.Mult, int  ): self.builder.mul,
+#           (ast.Div,  int  ): self.builder.sdiv,
+#           (ast.Add,  float): self.builder.fadd,
+#           (ast.Sub,  float): self.builder.fsub,
+#           (ast.Mult, float): self.builder.fmul,
+#           (ast.Div,  float): self.builder.fdiv,
+#       }
+#       f = d.get((op.__class__, self.ltype))
 
-        return f(left, right)
+#       if f is None:
+#           raise NotImplementedError(
+#               f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+
+#       return f(left, right)
+
+    def AnnAssign_annotation(self, node, parent, value):
+        self.ltype = value
+
+    def AnnAssign_exit(self, node, parent, target, annotation, value, simple):
+        """
+        AnnAssign(expr target, expr annotation, expr? value, int simple)
+        """
+        assert value is not None
+        assert simple == 1
+        # LLVM does not support simple assignment to local variables.
+        self.local_ns[target] = value
+        self.ltype = None
 
     def Assign_enter(self, node, parent):
         """
@@ -242,37 +281,56 @@ class NodeVisitor(BaseNodeVisitor):
         # LLVM does not support simple assignment to local variables.
         self.local_ns[name] = value
 
+    def Return_enter(self, node, parent):
+        self.ltype = self.rtype
+
     def Return_exit(self, node, parent, value):
         """
         Return(expr? value)
         """
+        value = self.rtype(value)
+        value = self.__py2ir(value)
+
+        self.ltype = None
         return self.builder.ret(value)
 
+    def __py2ir(self, value):
+        py_type = type(value)
+        #py_type = self.ltype
+        ir_type = types[py_type]
+        return ir.Constant(ir_type, value)
 
-def node_to_llvm(node):
-    visitor = NodeVisitor()
+
+def node_to_llvm(node, debug=True):
+    visitor = NodeVisitor(debug)
     visitor.traverse(node)
     return visitor.module
 
-def py2llvm(node):
+def py2llvm(node, debug=True):
     node = ast.parse(node)
-    return node_to_llvm(node)
+    return node_to_llvm(node, debug=debug)
 
 
 source = """
-def f() -> float:
-    a = 2
-    b = 4
-    c = (a + b) * 2 - 3
-    c = c / 3
+def f() -> int:
+    a: int = 2
+    b: int = 4
+    c: int = (a + b) * 2 - 3
+    c: int = c / 3
     return c
 """
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args()
+    debug = args.debug
+
     print('====== Source ======')
     print(source)
-    print('====== Debug ======')
-    module = py2llvm(source)
+    if debug:
+        print('====== Debug ======')
+    module = py2llvm(source, debug=debug)
     module = str(module)
     print('====== IR ======')
     print(module)
