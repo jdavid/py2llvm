@@ -10,6 +10,7 @@ Useful links:
 # Standard Library
 import argparse
 import ast
+import ctypes
 import operator
 
 from llvmlite import ir
@@ -19,9 +20,14 @@ from run import run
 double = ir.DoubleType()
 int64 = ir.IntType(64)
 
-types = {
+type_py2ir = {
     float: double,
     int: int64,
+}
+
+type_py2c = {
+    float: ctypes.c_double,
+    int: ctypes.c_int64,
 }
 
 
@@ -141,6 +147,11 @@ class NodeVisitor(BaseNodeVisitor):
     local_ns = None
     ltype = None # Type of the local variable
 
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        # Signatures for ctypes
+        self.c_signatures = {}
+
     def print(self, line):
         print(self.depth * ' ' + line)
 
@@ -190,8 +201,10 @@ class NodeVisitor(BaseNodeVisitor):
     def FunctionDef_returns(self, node, parent, value):
         self.rtype = value
         # TODO Cache function types, do not generate twice the same
-        ftype = ir.FunctionType(types[self.rtype], self.args)
-        function = ir.Function(self.module, ftype, node.name)
+        fname = node.name
+        self.c_signatures[fname] = [type_py2c[self.rtype]]
+        ftype = ir.FunctionType(type_py2ir[self.rtype], self.args)
+        function = ir.Function(self.module, ftype, fname)
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
@@ -297,18 +310,19 @@ class NodeVisitor(BaseNodeVisitor):
     def __py2ir(self, value):
         py_type = type(value)
         #py_type = self.ltype
-        ir_type = types[py_type]
+        ir_type = type_py2ir[py_type]
         return ir.Constant(ir_type, value)
 
 
-def node_to_llvm(node, debug=True):
+def py2llvm(node, debug=True):
+    # Source to AST tree
+    node = ast.parse(node)
+    # Traverse AST tree
     visitor = NodeVisitor(debug)
     visitor.traverse(node)
-    return visitor.module
-
-def py2llvm(node, debug=True):
-    node = ast.parse(node)
-    return node_to_llvm(node, debug=debug)
+    # Return IR (and ctypes signatures)
+    llvm_ir = str(visitor.module)
+    return llvm_ir, visitor.c_signatures
 
 
 source = """
@@ -330,9 +344,9 @@ if __name__ == '__main__':
     print(source)
     if debug:
         print('====== Debug ======')
-    module = py2llvm(source, debug=debug)
-    module = str(module)
+    llvm_ir, sigs = py2llvm(source, debug=debug)
     print('====== IR ======')
-    print(module)
+    print(llvm_ir)
     print('====== Output ======')
-    print(run(module, 'f'))
+    fname = 'f'
+    print(run(llvm_ir, fname, sigs[fname]))

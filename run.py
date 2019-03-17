@@ -3,7 +3,7 @@ From http://llvmlite.pydata.org/en/latest/user-guide/binding/examples.html
 """
 
 
-from ctypes import CFUNCTYPE, c_double
+from ctypes import CFUNCTYPE
 import llvmlite.binding as llvm
 
 
@@ -42,7 +42,7 @@ def compile_ir(engine, llvm_ir):
     return mod
 
 
-def run(llvm_ir, fname):
+def run(llvm_ir, fname, sig):
     engine = create_execution_engine()
     compile_ir(engine, llvm_ir)
 
@@ -50,5 +50,5 @@ def run(llvm_ir, fname):
     func_ptr = engine.get_function_address(fname)
 
     # Run the function via ctypes
-    cfunc = CFUNCTYPE(c_double, c_double, c_double)(func_ptr)
-    return cfunc(1.0, 3.5)
+    cfunc = CFUNCTYPE(*sig)(func_ptr)
+    return cfunc()
