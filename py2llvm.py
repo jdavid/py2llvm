@@ -150,7 +150,7 @@ class NodeVisitor(BaseNodeVisitor):
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         # Signatures for ctypes
-        self.c_signatures = {}
+        self.c_functypes = {}
 
     def print(self, line):
         print(self.depth * ' ' + line)
@@ -193,18 +193,45 @@ class NodeVisitor(BaseNodeVisitor):
         arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
                      arg? kwarg, expr* defaults)
         """
-        if any([node.args, node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
-            raise NotImplementedError('functions with arguments not supported')
+        if any([node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
+            raise NotImplementedError('only positional are supported')
 
-        self.args = ()
+    def arg_enter(self, node, parent):
+        """
+        arg = (identifier arg, expr? annotation)
+               attributes (int lineno, int col_offset)
+        """
+        assert node.annotation is not None
 
-    def FunctionDef_returns(self, node, parent, value):
-        self.rtype = value
-        # TODO Cache function types, do not generate twice the same
+    def arg_exit(self, node, parent, arg, annotation):
+        return arg, annotation
+
+    def arguments_args(self, node, parent, args):
+        self.args = args
+
+    def arguments_exit(self, node, parent, args, vararg, kwonlyargs, kw_defaults, kwarg, defaults):
+        return args
+
+    def FunctionDef_returns(self, node, parent, rtype):
+        self.rtype = rtype
         fname = node.name
-        self.c_signatures[fname] = [type_py2c[self.rtype]]
-        ftype = ir.FunctionType(type_py2ir[self.rtype], self.args)
+
+        # Keep the ctypes signature
+        c_args = [rtype] + [py_type for name, py_type in self.args]
+        c_args = [type_py2c[t] for t in c_args]
+        self.c_functypes[fname] = ctypes.CFUNCTYPE(*c_args)
+
+        # TODO Cache function types, do not generate twice the same
+        args = tuple(type_py2ir[py_type] for name, py_type in self.args)
+        ftype = ir.FunctionType(type_py2ir[rtype], args)
         function = ir.Function(self.module, ftype, fname)
+        # Keep arguments in local namespace
+        for i, (name, py_type) in enumerate(self.args):
+            arg = function.args[i]
+            arg.py_type = py_type
+            #print(arg.name, arg.type)
+            self.local_ns[name] = arg
+
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
@@ -237,6 +264,27 @@ class NodeVisitor(BaseNodeVisitor):
         return node
 
     def BinOp_exit(self, node, parent, left, op, right):
+        if isinstance(left, ir.Value) or isinstance(right, ir.Value):
+            d = {
+                (ast.Add,  int  ): self.builder.add,
+                (ast.Sub,  int  ): self.builder.sub,
+                (ast.Mult, int  ): self.builder.mul,
+                (ast.Div,  int  ): self.builder.sdiv,
+                (ast.Add,  float): self.builder.fadd,
+                (ast.Sub,  float): self.builder.fsub,
+                (ast.Mult, float): self.builder.fmul,
+                (ast.Div,  float): self.builder.fdiv,
+            }
+            ir_op = d.get((op.__class__, self.ltype))
+            if ir_op is None:
+                raise NotImplementedError(
+                    f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+
+            left = self.__py2ir(left)
+            right = self.__py2ir(right)
+            return ir_op(left, right)
+
+        # Two Python values
         ast2op = {
             ast.Add: operator.add,
             ast.Sub: operator.sub,
@@ -248,24 +296,6 @@ class NodeVisitor(BaseNodeVisitor):
             raise NotImplementedError(
                 f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
         return py_op(left, right)
-
-#       d = {
-#           (ast.Add,  int  ): self.builder.add,
-#           (ast.Sub,  int  ): self.builder.sub,
-#           (ast.Mult, int  ): self.builder.mul,
-#           (ast.Div,  int  ): self.builder.sdiv,
-#           (ast.Add,  float): self.builder.fadd,
-#           (ast.Sub,  float): self.builder.fsub,
-#           (ast.Mult, float): self.builder.fmul,
-#           (ast.Div,  float): self.builder.fdiv,
-#       }
-#       f = d.get((op.__class__, self.ltype))
-
-#       if f is None:
-#           raise NotImplementedError(
-#               f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
-
-#       return f(left, right)
 
     def AnnAssign_annotation(self, node, parent, value):
         self.ltype = value
@@ -290,7 +320,7 @@ class NodeVisitor(BaseNodeVisitor):
 
     def Assign_exit(self, node, parent, name, value):
         name = name[0]
-        #assert type(value) is ir.values.Constant
+        #assert type(value) is ir.Constant
         # LLVM does not support simple assignment to local variables.
         self.local_ns[name] = value
 
@@ -301,15 +331,24 @@ class NodeVisitor(BaseNodeVisitor):
         """
         Return(expr? value)
         """
-        value = self.rtype(value)
-        value = self.__py2ir(value)
+        value = self.__py2ir(value, self.rtype)
 
         self.ltype = None
         return self.builder.ret(value)
 
-    def __py2ir(self, value):
-        py_type = type(value)
+    def __py2ir(self, value, py_type=None):
+        # Do nothing if it's already a IR value
+        if isinstance(value, ir.Value):
+            return value
+
+        # First coerce in Python
         #py_type = self.ltype
+        if py_type is None:
+            py_type = type(value)
+        else:
+            value = py_type(value)
+
+        # Convert to IR constant
         ir_type = type_py2ir[py_type]
         return ir.Constant(ir_type, value)
 
@@ -322,12 +361,11 @@ def py2llvm(node, debug=True):
     visitor.traverse(node)
     # Return IR (and ctypes signatures)
     llvm_ir = str(visitor.module)
-    return llvm_ir, visitor.c_signatures
+    return llvm_ir, visitor.c_functypes
 
 
 source = """
-def f() -> int:
-    a: int = 2
+def f(a: int) -> int:
     b: int = 4
     c: int = (a + b) * 2 - 3
     c: int = c / 3
@@ -349,4 +387,5 @@ if __name__ == '__main__':
     print(llvm_ir)
     print('====== Output ======')
     fname = 'f'
-    print(run(llvm_ir, fname, sigs[fname]))
+    out = run(llvm_ir, fname, sigs[fname], 2)
+    print(out)
