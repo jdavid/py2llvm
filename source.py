@@ -11,3 +11,6 @@ def ops() -> int:
     c: int = (a + b) * 2 - 3
     c: int = c / 3
     return c
+
+def double(x: int) -> int:
+    return x * 2
