@@ -195,21 +195,66 @@ class NodeVisitor(BaseNodeVisitor):
         for name, field in ast.iter_fields(node):
             self.print(f'- {name} {field}')
 
-    def __py2ir(self, value, py_type=None):
-        # Do nothing if it's already a IR value
+    def __get_type(self, value):
+        """
+        Return the type of value, only int and float are supported.
+        The value may be a Python or an IR value.
+        """
         if isinstance(value, ir.Value):
-            return value
-
-        # First coerce in Python
-        #py_type = self.ltype
-        if py_type is None:
-            py_type = type(value)
+            vtype = {
+                ir.IntType: int,
+                ir.DoubleType: float
+            }.get(value.type.__class__)
         else:
-            value = py_type(value)
+            vtype = type(value)
 
-        # Convert to IR constant
-        ir_type = type_py2ir[py_type]
-        return ir.Constant(ir_type, value)
+        if vtype in (int, float):
+            return vtype
+
+        raise NotImplementedError(f'only int and float supported, got {repr(value)}')
+
+    def __get_lr_type(self, left, right):
+        """
+        For coercion purposes, return int if both are int, float if one is
+        float.
+        """
+        ltype = self.__get_type(left)
+        rtype = self.__get_type(right)
+        if ltype is int and rtype is int:
+            return int
+        return float
+
+    def __py2ir(self, value, dst_type=None):
+        src_type = self.__get_type(value)
+
+        # If target type is not given, will be same as source type
+        if dst_type is None:
+            dst_type = src_type
+
+        # Target type, in IR
+        dst_type_ir = type_py2ir[dst_type]
+
+        # If Python value, return a constant
+        if not isinstance(value, ir.Value):
+            if src_type is not dst_type:
+                value = dst_type(value)
+
+            return ir.Constant(dst_type_ir, value)
+
+        # Coerce
+        if dst_type is not src_type:
+            conversion = {
+                (int, float): self.builder.sitofp,
+                (float, int): self.builder.fptosi,
+            }.get((src_type, dst_type))
+            if conversion is None:
+                err = f'Conversion from {src_type} to {dst_type} not suppoerted'
+                raise NotImplementedError(err)
+
+            value = conversion(value, dst_type_ir)
+
+        return value
+
 
     #
     # Leaf nodes
@@ -236,6 +281,24 @@ class NodeVisitor(BaseNodeVisitor):
     def operator_visit(self, node, parent):
         return node
 
+    def Eq_visit(self, node, parent):
+        return '=='
+
+    def NotEq_visit(self, node, parent):
+        return '!='
+
+    def Lt_visit(self, node, parent):
+        return '<'
+
+    def LtE_visit(self, node, parent):
+        return '<='
+
+    def Gt_visit(self, node, parent):
+        return '>'
+
+    def GtE_visit(self, node, parent):
+        return '>='
+
     def object_visit(self, node, parent):
         raise NotImplementedError(f'{node.__class__} not supported')
 
@@ -244,38 +307,86 @@ class NodeVisitor(BaseNodeVisitor):
     #
 
     def BinOp_exit(self, node, parent, left, op, right):
-        if isinstance(left, ir.Value) or isinstance(right, ir.Value):
-            d = {
-                (ast.Add,  int  ): self.builder.add,
-                (ast.Sub,  int  ): self.builder.sub,
-                (ast.Mult, int  ): self.builder.mul,
-                (ast.Div,  int  ): self.builder.sdiv,
-                (ast.Add,  float): self.builder.fadd,
-                (ast.Sub,  float): self.builder.fsub,
-                (ast.Mult, float): self.builder.fmul,
-                (ast.Div,  float): self.builder.fdiv,
+        # Two Python values
+        if not isinstance(left, ir.Value) and not isinstance(right, ir.Value):
+            ast2op = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
             }
-            ir_op = d.get((op.__class__, self.ltype))
-            if ir_op is None:
+            py_op = ast2op.get(op.__class__)
+            if py_op is None:
                 raise NotImplementedError(
                     f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+            return py_op(left, right)
 
-            left = self.__py2ir(left)
-            right = self.__py2ir(right)
-            return ir_op(left, right)
+        # One or more IR values
+        py_type = self.__get_lr_type(left, right)
+        left = self.__py2ir(left, py_type)
+        right = self.__py2ir(right, py_type)
 
-        # Two Python values
-        ast2op = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
+        d = {
+            (ast.Add,  int  ): self.builder.add,
+            (ast.Sub,  int  ): self.builder.sub,
+            (ast.Mult, int  ): self.builder.mul,
+            (ast.Div,  int  ): self.builder.sdiv,
+            (ast.Add,  float): self.builder.fadd,
+            (ast.Sub,  float): self.builder.fsub,
+            (ast.Mult, float): self.builder.fmul,
+            (ast.Div,  float): self.builder.fdiv,
         }
-        py_op = ast2op.get(op.__class__)
-        if py_op is None:
+        ir_op = d.get((op.__class__, py_type))
+        if ir_op is None:
             raise NotImplementedError(
                 f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
-        return py_op(left, right)
+
+        return ir_op(left, right)
+
+    def Compare_exit(self, node, parent, left, ops, comparators):
+        """
+        Compare(expr left, cmpop* ops, expr* comparators)
+        """
+        assert len(ops) == 1
+        assert len(comparators) == 1
+        op = ops[0]
+        right = comparators[0]
+
+        # Two Python values
+        if not isinstance(left, ir.Value) and not isinstance(right, ir.Value):
+            ast2op = {
+                '==': operator.eq,
+                '!=': operator.ne,
+                '<': operator.lt,
+                '<=': operator.le,
+                '>': operator.gt,
+                '>=': operator.ge,
+            }
+            py_op = ast2op.get(op)
+            return py_op(left, right)
+
+        # One or more IR values
+        py_type = self.__get_lr_type(left, right)
+        left = self.__py2ir(left, py_type)
+        right = self.__py2ir(right, py_type)
+
+        d = {
+            int: self.builder.icmp_signed,
+            float: self.builder.fcmp_unordered, # XXX fcmp_ordered
+        }
+        ir_op = d.get(py_type)
+        return ir_op(op, left, right)
+
+
+    #
+    # if .. elif .. else
+    #
+
+    def If_enter(self, node, parent):
+        """
+        If(expr test, stmt* body, stmt* orelse)
+        """
+        assert not node.orelse
 
 
     #
@@ -411,10 +522,15 @@ def py2llvm(node, debug=True):
 
 source = """
 def f(a: int) -> int:
-    b: int = 4
-    c: int = (a + b) * 2 - 3
-    c: int = c / 3
-    return c
+#   if a == 0:
+#       return 1
+
+    return a + 2.0
+
+#   b: int = 4
+#   c: int = (a + b) * 2 - 3
+#   c: int = c / 3
+#   return c
 """
 
 if __name__ == '__main__':
