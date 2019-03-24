@@ -31,6 +31,11 @@ type_py2c = {
 }
 
 
+LEAFS = {
+    ast.Name, ast.Num,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, # operators
+}
+
 class BaseNodeVisitor:
     """
     The ast.NodeVisitor class traverses the AST and calls user defined
@@ -86,6 +91,9 @@ class BaseNodeVisitor:
                 pass
 
     def traverse(self, node, parent=None):
+        if node.__class__ in LEAFS:
+            return self.callback('visit', node, parent)
+
         # Enter
         self.callback('enter', node, parent)
         self.depth += 1
@@ -130,6 +138,12 @@ class BaseNodeVisitor:
 #                   print(self.depth * ' '  + f'</{name} {attrs}>')
 #               else:
 #                   print(self.depth * ' '  + f'</{name}>')
+            elif event == 'visit':
+                if node._fields:
+                    attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
+                    print(self.depth * ' '  + f'<{name} {attrs} />')
+                else:
+                    print(self.depth * ' '  + f'<{name} />')
             else:
                 attrs = ' '.join([repr(x) for x in args])
                 print(self.depth * ' '  + f'.{event}={attrs}')
@@ -139,6 +153,13 @@ class BaseNodeVisitor:
 
 
 class NodeVisitor(BaseNodeVisitor):
+    """
+    Builtin types are:
+    identifier, int, string, bytes, object, singleton, constant
+
+    singleton: None, True or False
+    constant can be None, whereas None means "no value" for object.
+    """
 
     module = None
     args = None
@@ -158,6 +179,65 @@ class NodeVisitor(BaseNodeVisitor):
     def debug(self, node, parent):
         for name, field in ast.iter_fields(node):
             self.print(f'- {name} {field}')
+
+    def __py2ir(self, value, py_type=None):
+        # Do nothing if it's already a IR value
+        if isinstance(value, ir.Value):
+            return value
+
+        # First coerce in Python
+        #py_type = self.ltype
+        if py_type is None:
+            py_type = type(value)
+        else:
+            value = py_type(value)
+
+        # Convert to IR constant
+        ir_type = type_py2ir[py_type]
+        return ir.Constant(ir_type, value)
+
+    #
+    # Leaf nodes
+    #
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = node.ctx.__class__
+        if ctx is ast.Load:
+            return self.local_ns[name]
+        if ctx is ast.Store:
+            return name
+        raise NotImplementedError(f'unexpected ctx={ctx}')
+
+    def Num_visit(self, node, parent):
+        """
+        Num(object n)
+        """
+        return node.n
+
+    def Add_visit(self, node, parent):
+        return node
+
+    def Sub_visit(self, node, parent):
+        return node
+
+    def Mult_visit(self, node, parent):
+        return node
+
+    def Div_visit(self, node, parent):
+        return node
+
+    #
+    # Expressions
+    #
+
+
+    #
+    # Non-leaf nodes
+    #
 
     def Module_enter(self, node, parent):
         """
@@ -235,34 +315,6 @@ class NodeVisitor(BaseNodeVisitor):
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
 
-    def Num_exit(self, node, parent, value):
-        """
-        Num(object n)
-        """
-        return value
-
-    def Name_exit(self, node, parent, *args):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        name = node.id
-        if type(node.ctx) is ast.Load:
-            return self.local_ns[name]
-        if type(node.ctx) is ast.Store:
-            return name
-
-    def Add_exit(self, node, parent, *args):
-        return node
-
-    def Sub_exit(self, node, parent, *args):
-        return node
-
-    def Mult_exit(self, node, parent, *args):
-        return node
-
-    def Div_exit(self, node, parent, *args):
-        return node
-
     def BinOp_exit(self, node, parent, left, op, right):
         if isinstance(left, ir.Value) or isinstance(right, ir.Value):
             d = {
@@ -335,22 +387,6 @@ class NodeVisitor(BaseNodeVisitor):
 
         self.ltype = None
         return self.builder.ret(value)
-
-    def __py2ir(self, value, py_type=None):
-        # Do nothing if it's already a IR value
-        if isinstance(value, ir.Value):
-            return value
-
-        # First coerce in Python
-        #py_type = self.ltype
-        if py_type is None:
-            py_type = type(value)
-        else:
-            value = py_type(value)
-
-        # Convert to IR constant
-        ir_type = type_py2ir[py_type]
-        return ir.Constant(ir_type, value)
 
 
 def py2llvm(node, debug=True):
