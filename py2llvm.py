@@ -33,7 +33,16 @@ type_py2c = {
 
 LEAFS = {
     ast.Name, ast.Num,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, # operators
+    # boolop
+    ast.And, ast.Or,
+    # operator
+    ast.Add, ast.Sub, ast.Mult, ast.MatMult, ast.Div, ast.Mod, ast.Pow,
+    ast.LShift, ast.RShift, ast.BitOr, ast.BitXor, ast.BitAnd, ast.FloorDiv,
+    # unaryop
+    ast.Invert, ast.Not, ast.UAdd, ast.USub,
+    # cmpop
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot,
+    ast.In, ast.NotIn,
 }
 
 class BaseNodeVisitor:
@@ -41,10 +50,15 @@ class BaseNodeVisitor:
     The ast.NodeVisitor class traverses the AST and calls user defined
     callbacks when entering a node.
 
-    Here we do the same thing but:
+    Here we do the same thing but we've more callbacks:
 
     - Callback as well when exiting the node
     - Callback as well after traversing an attribute
+    - Except leaf nodes, which are called only once (like in ast.NodeVisitor)
+    - To find out the callback we use the MRO
+
+    And we pass more information to the callbacks:
+
     - Pass the parent node to the callback
     - Pass the value of the attribute to the attribute callback
     - Pass the values of all the attributes to the exit callback
@@ -54,9 +68,10 @@ class BaseNodeVisitor:
     - def <classname>_enter(node, parent)
     - def <classname>_<attribute>(node, parent, value)
     - def <classname>_exit(node, parent, *args)
-    - def default_enter(node, parent)
-    - def default_<attribute>(node, parent, value)
-    - def default_exit(node, parent, *args)
+
+    For leaf nodes use:
+
+    - def <classname>_visit(node, parent)
 
     Call using traverse:
 
@@ -116,11 +131,11 @@ class BaseNodeVisitor:
         return self.callback('exit', node, parent, *args)
 
     def callback(self, event, node, parent, *args):
-        method = f'{node.__class__.__name__}_{event}'
-        cb = getattr(self, method, None)
-        if cb is None:
-            method = f'default_{event}'
+        for cls in node.__class__.__mro__:
+            method = f'{cls.__name__}_{event}'
             cb = getattr(self, method, None)
+            if cb is not None:
+                break
 
         # Debug
         if self.debug:
@@ -218,25 +233,53 @@ class NodeVisitor(BaseNodeVisitor):
         """
         return node.n
 
-    def Add_visit(self, node, parent):
+    def operator_visit(self, node, parent):
         return node
 
-    def Sub_visit(self, node, parent):
-        return node
-
-    def Mult_visit(self, node, parent):
-        return node
-
-    def Div_visit(self, node, parent):
-        return node
+    def object_visit(self, node, parent):
+        raise NotImplementedError(f'{node.__class__} not supported')
 
     #
     # Expressions
     #
 
+    def BinOp_exit(self, node, parent, left, op, right):
+        if isinstance(left, ir.Value) or isinstance(right, ir.Value):
+            d = {
+                (ast.Add,  int  ): self.builder.add,
+                (ast.Sub,  int  ): self.builder.sub,
+                (ast.Mult, int  ): self.builder.mul,
+                (ast.Div,  int  ): self.builder.sdiv,
+                (ast.Add,  float): self.builder.fadd,
+                (ast.Sub,  float): self.builder.fsub,
+                (ast.Mult, float): self.builder.fmul,
+                (ast.Div,  float): self.builder.fdiv,
+            }
+            ir_op = d.get((op.__class__, self.ltype))
+            if ir_op is None:
+                raise NotImplementedError(
+                    f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+
+            left = self.__py2ir(left)
+            right = self.__py2ir(right)
+            return ir_op(left, right)
+
+        # Two Python values
+        ast2op = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+        }
+        py_op = ast2op.get(op.__class__)
+        if py_op is None:
+            raise NotImplementedError(
+                f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+        return py_op(left, right)
+
 
     #
-    # Non-leaf nodes
+    # Other non-leaf nodes
     #
 
     def Module_enter(self, node, parent):
@@ -314,40 +357,6 @@ class NodeVisitor(BaseNodeVisitor):
 
         block = function.append_basic_block()
         self.builder = ir.IRBuilder(block)
-
-    def BinOp_exit(self, node, parent, left, op, right):
-        if isinstance(left, ir.Value) or isinstance(right, ir.Value):
-            d = {
-                (ast.Add,  int  ): self.builder.add,
-                (ast.Sub,  int  ): self.builder.sub,
-                (ast.Mult, int  ): self.builder.mul,
-                (ast.Div,  int  ): self.builder.sdiv,
-                (ast.Add,  float): self.builder.fadd,
-                (ast.Sub,  float): self.builder.fsub,
-                (ast.Mult, float): self.builder.fmul,
-                (ast.Div,  float): self.builder.fdiv,
-            }
-            ir_op = d.get((op.__class__, self.ltype))
-            if ir_op is None:
-                raise NotImplementedError(
-                    f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
-
-            left = self.__py2ir(left)
-            right = self.__py2ir(right)
-            return ir_op(left, right)
-
-        # Two Python values
-        ast2op = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
-        }
-        py_op = ast2op.get(op.__class__)
-        if py_op is None:
-            raise NotImplementedError(
-                f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
-        return py_op(left, right)
 
     def AnnAssign_annotation(self, node, parent, value):
         self.ltype = value
