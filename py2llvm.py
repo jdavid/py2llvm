@@ -19,6 +19,7 @@ from run import run
 
 double = ir.DoubleType()
 int64 = ir.IntType(64)
+zero = ir.Constant(int64, 0)
 
 type_py2ir = {
     float: double,
@@ -167,7 +168,128 @@ class BaseNodeVisitor:
         return cb(node, parent, *args) if cb is not None else None
 
 
-class NodeVisitor(BaseNodeVisitor):
+class BaseVisitor(BaseNodeVisitor):
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = node.ctx.__class__
+        if ctx is ast.Load:
+            return self.local_ns[name]
+        if ctx is ast.Store:
+            return name
+        raise NotImplementedError(f'unexpected ctx={ctx}')
+
+    def FunctionDef_enter(self, node, parent):
+
+        """
+        FunctionDef(identifier name, arguments args,
+                    stmt* body, expr* decorator_list, expr? returns)
+        """
+        assert type(parent) is ast.Module, 'nested functions not implemented'
+        assert not node.decorator_list, 'decorators not implemented'
+        assert node.returns is not None, 'expected type-hint for function return type'
+
+        # Initialize function context
+        node.local_ns = {'float': float, 'int': int}
+        self.local_ns = node.local_ns
+
+
+class BlockVisitor(BaseVisitor):
+    """
+    The algorithm makes 2 passes to the AST. This is the first one, here:
+
+    - We fail early for features we don't support.
+    - We populate the AST attaching structure IR objects (module, functions,
+      blocks). These will be used in the 2nd pass.
+
+    In general we should do here as much as we can.
+    """
+
+    def Module_enter(self, node, parent):
+        """
+        Module(stmt* body)
+        """
+        self.root = node
+
+        # This will be the final output of the whole process
+        node.module = ir.Module()
+        node.c_functypes = {} # Signatures for ctypes
+
+
+    def arguments_enter(self, node, parent):
+        """
+        arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
+                     arg? kwarg, expr* defaults)
+        """
+        if any([node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
+            raise NotImplementedError('only positional arguments are supported')
+
+    def arg_enter(self, node, parent):
+        """
+        arg = (identifier arg, expr? annotation)
+               attributes (int lineno, int col_offset)
+        """
+        assert node.annotation is not None, 'function arguments must have a type hint'
+
+    def arg_exit(self, node, parent, arg, annotation):
+        return arg, annotation
+
+    def arguments_exit(self, node, parent, args, vararg, kwonlyargs, kw_defaults, kwarg, defaults):
+        return args
+
+    def FunctionDef_args(self, node, parent, args):
+        self.f_args = args
+
+    def FunctionDef_returns(self, node, parent, rtype):
+        node.f_rtype = rtype
+
+        root = self.root
+        f_name = node.name
+        f_args = self.f_args
+        f_rtype = node.f_rtype
+
+        # Keep the ctypes signature
+        c_args = [f_rtype] + [py_type for name, py_type in f_args]
+        c_args = [type_py2c[t] for t in c_args]
+        self.root.c_functypes[f_name] = ctypes.CFUNCTYPE(*c_args)
+
+        # TODO Cache function types, do not generate twice the same
+        args = tuple(type_py2ir[py_type] for name, py_type in f_args)
+        ftype = ir.FunctionType(type_py2ir[f_rtype], args)
+        function = ir.Function(root.module, ftype, f_name)
+        # Keep arguments in local namespace
+        for i, (name, py_type) in enumerate(f_args):
+            arg = function.args[i]
+            arg.py_type = py_type
+            node.local_ns[name] = arg
+
+        block = function.append_basic_block()
+        node.block = block
+        self.block = block
+
+        node.function = function
+        self.function = function
+
+    def If_test(self, node, parent, test):
+        """
+        If(expr test, stmt* body, stmt* orelse)
+        """
+        block = self.function.append_basic_block()
+        node.block_true = block
+
+    def If_body(self, node, parent, body):
+        block = self.function.append_basic_block()
+        node.block_false = block
+
+    def If_orelse(self, node, parent, orelse):
+        block = self.function.append_basic_block()
+        node.block_after = block
+
+
+class GenVisitor(BaseVisitor):
     """
     Builtin types are:
     identifier, int, string, bytes, object, singleton, constant
@@ -177,16 +299,11 @@ class NodeVisitor(BaseNodeVisitor):
     """
 
     module = None
+    function = None
     args = None
     builder = None
     rtype = None # Type of the return value
-    local_ns = None
     ltype = None # Type of the local variable
-
-    def __init__(self, *args, **kw):
-        super().__init__(*args, **kw)
-        # Signatures for ctypes
-        self.c_functypes = {}
 
     def print(self, line):
         print(self.depth * ' ' + line)
@@ -260,18 +377,6 @@ class NodeVisitor(BaseNodeVisitor):
     # Leaf nodes
     #
 
-    def Name_visit(self, node, parent):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        name = node.id
-        ctx = node.ctx.__class__
-        if ctx is ast.Load:
-            return self.local_ns[name]
-        if ctx is ast.Store:
-            return name
-        raise NotImplementedError(f'unexpected ctx={ctx}')
-
     def Num_visit(self, node, parent):
         """
         Num(object n)
@@ -305,6 +410,11 @@ class NodeVisitor(BaseNodeVisitor):
     #
     # Expressions
     #
+
+    def FunctionDef_enter(self, node, parent):
+        self.local_ns = node.local_ns
+        self.builder = ir.IRBuilder(node.block)
+        self.rtype = node.f_rtype
 
     def BinOp_exit(self, node, parent, left, op, right):
         # Two Python values
@@ -381,94 +491,27 @@ class NodeVisitor(BaseNodeVisitor):
     #
     # if .. elif .. else
     #
-
-    def If_enter(self, node, parent):
+    def If_test(self, node, parent, test):
         """
         If(expr test, stmt* body, stmt* orelse)
         """
-        assert not node.orelse
+        self.builder.cbranch(test, node.block_true, node.block_false)
+        self.builder.position_at_end(node.block_true)
+
+    def If_body(self, node, parent, body):
+        self.builder.position_at_end(node.block_false)
+
+    def If_orelse(self, node, parent, orelse):
+        if not orelse:
+            self.builder.branch(node.block_after)
+
+        self.builder.position_at_end(node.block_after)
+        self.builder.add(zero, zero)
 
 
     #
     # Other non-leaf nodes
     #
-
-    def Module_enter(self, node, parent):
-        """
-        Module(stmt* body)
-        """
-        assert parent is None
-        self.module = ir.Module()
-
-    def FunctionDef_enter(self, node, parent):
-        """
-        FunctionDef(identifier name, arguments args,
-                    stmt* body, expr* decorator_list, expr? returns)
-        """
-        assert type(parent) is ast.Module
-
-        # Decorators not supported
-        assert not node.decorator_list
-
-        # Return type
-        # We don't support type inference yet, the return type must be
-        # explicitely given with a function annotation
-        assert node.returns is not None, 'return type inference is not supported'
-
-        # Initialize function context
-        self.builder = ir.IRBuilder()
-        self.local_ns = {
-            'float': float,
-            'int': int,
-        }
-
-    def arguments_enter(self, node, parent):
-        """
-        arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
-                     arg? kwarg, expr* defaults)
-        """
-        if any([node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
-            raise NotImplementedError('only positional are supported')
-
-    def arg_enter(self, node, parent):
-        """
-        arg = (identifier arg, expr? annotation)
-               attributes (int lineno, int col_offset)
-        """
-        assert node.annotation is not None
-
-    def arg_exit(self, node, parent, arg, annotation):
-        return arg, annotation
-
-    def arguments_args(self, node, parent, args):
-        self.args = args
-
-    def arguments_exit(self, node, parent, args, vararg, kwonlyargs, kw_defaults, kwarg, defaults):
-        return args
-
-    def FunctionDef_returns(self, node, parent, rtype):
-        self.rtype = rtype
-        fname = node.name
-
-        # Keep the ctypes signature
-        c_args = [rtype] + [py_type for name, py_type in self.args]
-        c_args = [type_py2c[t] for t in c_args]
-        self.c_functypes[fname] = ctypes.CFUNCTYPE(*c_args)
-
-        # TODO Cache function types, do not generate twice the same
-        args = tuple(type_py2ir[py_type] for name, py_type in self.args)
-        ftype = ir.FunctionType(type_py2ir[rtype], args)
-        function = ir.Function(self.module, ftype, fname)
-        # Keep arguments in local namespace
-        for i, (name, py_type) in enumerate(self.args):
-            arg = function.args[i]
-            arg.py_type = py_type
-            #print(arg.name, arg.type)
-            self.local_ns[name] = arg
-
-        block = function.append_basic_block()
-        self.builder = ir.IRBuilder(block)
-
     def AnnAssign_annotation(self, node, parent, value):
         self.ltype = value
 
@@ -512,18 +555,29 @@ class NodeVisitor(BaseNodeVisitor):
 def py2llvm(node, debug=True):
     # Source to AST tree
     node = ast.parse(node)
-    # Traverse AST tree
-    visitor = NodeVisitor(debug)
-    visitor.traverse(node)
+
+    # 1st pass: structure
+    if debug:
+        print('====== Debug: 1st pass ======')
+    BlockVisitor(debug).traverse(node)
+
+    # 2nd pass: generate
+    if debug:
+        print('====== Debug: 2nd pass ======')
+    GenVisitor(debug).traverse(node)
+
     # Return IR (and ctypes signatures)
-    llvm_ir = str(visitor.module)
-    return llvm_ir, visitor.c_functypes
+    llvm_ir = str(node.module)
+    return llvm_ir, node.c_functypes
 
 
 source = """
 def f(a: int) -> int:
-#   if a == 0:
-#       return 1
+    if a == 0:
+        return 1
+    else:
+        if a == 1:
+            return 2
 
     return a + 2.0
 
@@ -541,12 +595,11 @@ if __name__ == '__main__':
 
     print('====== Source ======')
     print(source)
-    if debug:
-        print('====== Debug ======')
     llvm_ir, sigs = py2llvm(source, debug=debug)
     print('====== IR ======')
     print(llvm_ir)
     print('====== Output ======')
     fname = 'f'
-    out = run(llvm_ir, fname, sigs[fname], 2)
-    print(out)
+    print(run(llvm_ir, fname, sigs[fname], 0))
+    print(run(llvm_ir, fname, sigs[fname], 1))
+    print(run(llvm_ir, fname, sigs[fname], 2))
