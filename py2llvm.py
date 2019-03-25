@@ -1,9 +1,56 @@
 """
+This program translates a small subset of Python to LLVM IR.
+
+Notes:
+
+- Only a very small subset is implemented.
+- Only integers and floats are supported.
+- Integers are translated to 64 bit integers in LLVM, and floats are translated
+  to 64 bit doubles in LLVM.
+- Function arguments and return values *must* be typed (type hints).
+
+Literals:
+
+- The "2" literal is an integer, the "2.0" literal is a float.
+- No other literal is allowed (None, etc.)
+
+Types:
+
+- Type conversion is done automatically, integers are converted to floats if
+  one operand is a float.
+- Type conversion can be explicit in an assignment, using type hints, e.g.
+  "a: int = 2.0" the float literal will be converted to an integer.
+
+The return value:
+
+- The functions *must* always return a value.
+- The return value is converted as well, e.g. if the function is declared to
+  return a float then in "return 2" the literal integer value will be converted
+  to float.
+
+LLVM is Static-Single-Assignment (SSA). There're 2 approaches to handle local
+variables:
+
+1. Follow the SSA form and use the PHI operator
+2. Allocate local variables in the stack, to walk around the SSA form
+
+We use the second solution (because it's simpler and the generated code looks
+closer to the input Python source, so it's simpler to visually verify its
+correctness). Then we run the "memory to register promotion" of the optimizer
+(TODO).
+
+The algorithm makes 2 passes to the AST. In the first pass the IR code blocks
+are created, in the second pass the code is generated.
+
 Useful links:
 
 - https://docs.python.org/3.6/library/ast.html#abstract-grammar
 - http://llvmlite.pydata.org/
+
+About LLVM:
+
 - https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/
+- https://www.llvm.org/docs/tutorial/index.html
 - https://llvm.org/docs/LangRef.html
 """
 
@@ -19,11 +66,17 @@ from run import run
 
 double = ir.DoubleType()
 int64 = ir.IntType(64)
-zero = ir.Constant(int64, 0)
+zero_int64 = ir.Constant(int64, 0)
+zero_double = ir.Constant(double, 0)
 
 type_py2ir = {
     float: double,
     int: int64,
+}
+
+type_ir2py = {
+    double: float,
+    int64: int,
 }
 
 type_py2c = {
@@ -161,26 +214,15 @@ class BaseNodeVisitor:
                 else:
                     print(self.depth * ' '  + f'<{name} />')
             else:
-                attrs = ' '.join([repr(x) for x in args])
-                print(self.depth * ' '  + f'.{event}={attrs}')
+                if cb is not None:
+                    attrs = ' '.join([repr(x) for x in args])
+                    print(self.depth * ' '  + f'.{event}={attrs}')
 
         # Call
         return cb(node, parent, *args) if cb is not None else None
 
 
 class BaseVisitor(BaseNodeVisitor):
-
-    def Name_visit(self, node, parent):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        name = node.id
-        ctx = node.ctx.__class__
-        if ctx is ast.Load:
-            return self.local_ns[name]
-        if ctx is ast.Store:
-            return name
-        raise NotImplementedError(f'unexpected ctx={ctx}')
 
     def FunctionDef_enter(self, node, parent):
 
@@ -207,6 +249,17 @@ class BlockVisitor(BaseVisitor):
 
     In general we should do here as much as we can.
     """
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = node.ctx.__class__
+        if ctx is ast.Load:
+            return self.local_ns.get(name)
+
+        return None
 
     def Module_enter(self, node, parent):
         """
@@ -243,35 +296,54 @@ class BlockVisitor(BaseVisitor):
     def FunctionDef_args(self, node, parent, args):
         self.f_args = args
 
-    def FunctionDef_returns(self, node, parent, rtype):
-        node.f_rtype = rtype
-
+    def FunctionDef_returns(self, node, parent, returns):
+        """
+        When we reach this point we have all the function signature: arguments
+        and return type.
+        """
         root = self.root
         f_name = node.name
         f_args = self.f_args
-        f_rtype = node.f_rtype
 
-        # Keep the ctypes signature
-        c_args = [f_rtype] + [py_type for name, py_type in f_args]
-        c_args = [type_py2c[t] for t in c_args]
-        self.root.c_functypes[f_name] = ctypes.CFUNCTYPE(*c_args)
-
-        # TODO Cache function types, do not generate twice the same
+        # Create the function type
         args = tuple(type_py2ir[py_type] for name, py_type in f_args)
-        ftype = ir.FunctionType(type_py2ir[f_rtype], args)
-        function = ir.Function(root.module, ftype, f_name)
-        # Keep arguments in local namespace
+        function_type = ir.FunctionType(type_py2ir[returns], args)
+
+        # Create the function
+        function = ir.Function(root.module, function_type, f_name)
+
+        # Create the first block of the function, and the associated builder
+        block = function.append_basic_block('vars')
+        builder = ir.IRBuilder(block)
+
+        # Function start: allocate a local variable for every argument
         for i, (name, py_type) in enumerate(f_args):
             arg = function.args[i]
-            arg.py_type = py_type
-            node.local_ns[name] = arg
+            ptr = builder.alloca(arg.type, name=name)
+            builder.store(arg, ptr)
+            # Keep Give a name to the arguments, and keep them in local namespace
+            node.local_ns[name] = ptr
 
+        # Add another block
+        # We do this only for clarity of the generated IR. The first block
+        # named "start" is where we allocate the local variables for the
+        # function arguments. This second block is where the code proper will
+        # begin.
         block = function.append_basic_block()
-        node.block = block
-        self.block = block
+        builder.branch(block)
+        builder.position_at_end(block)
 
-        node.function = function
+        # Keep stuff we will need in this first pass
         self.function = function
+
+        # Keep stuff for the second pass
+        node.builder = builder
+        node.f_rtype = returns
+
+        # Keep the ctypes signature, used in the tests
+        c_args = [returns] + [py_type for name, py_type in f_args]
+        c_args = [type_py2c[t] for t in c_args]
+        root.c_functypes[f_name] = ctypes.CFUNCTYPE(*c_args)
 
     def If_test(self, node, parent, test):
         """
@@ -286,7 +358,7 @@ class BlockVisitor(BaseVisitor):
 
     def If_orelse(self, node, parent, orelse):
         block = self.function.append_basic_block()
-        node.block_after = block
+        node.block_next = block
 
 
 class GenVisitor(BaseVisitor):
@@ -302,7 +374,7 @@ class GenVisitor(BaseVisitor):
     function = None
     args = None
     builder = None
-    rtype = None # Type of the return value
+    f_rtype = None # Type of the return value
     ltype = None # Type of the local variable
 
     def print(self, line):
@@ -372,10 +444,45 @@ class GenVisitor(BaseVisitor):
 
         return value
 
+    def noop(self):
+        """
+        This is to support empty blocks, e.g. "if cond: pass"
+        """
+        self.builder.add(zero_int64, zero_int64)
+
+    def assign(self, name, value):
+        """
+        This is to support simple assignments, e.g. "b = a"
+        """
+        py_type = self.__get_type(value)
+        if py_type is int:
+            var = self.builder.add(value, zero_int64, name=name)
+        elif py_type is float:
+            var = self.builder.fadd(value, zero_double, name=name)
+
+        var.name = name
+        return var
 
     #
     # Leaf nodes
     #
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = node.ctx.__class__
+
+        if ctx is ast.Load:
+            value = self.local_ns[name]
+            if type(value) is ir.AllocaInstr:
+                return self.builder.load(value)
+            return value
+
+        if ctx is ast.Store:
+            return name
+        raise NotImplementedError(f'unexpected ctx={ctx}')
 
     def Num_visit(self, node, parent):
         """
@@ -413,8 +520,8 @@ class GenVisitor(BaseVisitor):
 
     def FunctionDef_enter(self, node, parent):
         self.local_ns = node.local_ns
-        self.builder = ir.IRBuilder(node.block)
-        self.rtype = node.f_rtype
+        self.builder = node.builder
+        self.f_rtype = node.f_rtype
 
     def BinOp_exit(self, node, parent, left, op, right):
         # Two Python values
@@ -499,15 +606,13 @@ class GenVisitor(BaseVisitor):
         self.builder.position_at_end(node.block_true)
 
     def If_body(self, node, parent, body):
+        self.builder.branch(node.block_next)
         self.builder.position_at_end(node.block_false)
 
     def If_orelse(self, node, parent, orelse):
-        if not orelse:
-            self.builder.branch(node.block_after)
-
-        self.builder.position_at_end(node.block_after)
-        self.builder.add(zero, zero)
-
+        self.builder.branch(node.block_next)
+        self.builder.position_at_end(node.block_next)
+        #self.noop()
 
     #
     # Other non-leaf nodes
@@ -535,18 +640,24 @@ class GenVisitor(BaseVisitor):
 
     def Assign_exit(self, node, parent, name, value):
         name = name[0]
-        #assert type(value) is ir.Constant
-        # LLVM does not support simple assignment to local variables.
-        self.local_ns[name] = value
+        py_type = self.__get_type(value)
+        ir_type = type_py2ir[py_type]
+
+        ptr = self.local_ns.get(name)
+        if ptr is None:
+            ptr = self.builder.alloca(ir_type, name=name)
+            self.local_ns[name] = ptr
+
+        return self.builder.store(value, ptr)
 
     def Return_enter(self, node, parent):
-        self.ltype = self.rtype
+        self.ltype = self.f_rtype
 
     def Return_exit(self, node, parent, value):
         """
         Return(expr? value)
         """
-        value = self.__py2ir(value, self.rtype)
+        value = self.__py2ir(value, self.f_rtype)
 
         self.ltype = None
         return self.builder.ret(value)
@@ -574,12 +685,11 @@ def py2llvm(node, debug=True):
 source = """
 def f(a: int) -> int:
     if a == 0:
-        return 1
+        b = a + 1
     else:
-        if a == 1:
-            return 2
+        b = a
 
-    return a + 2.0
+    return b
 
 #   b: int = 4
 #   c: int = (a + b) * 2 - 3
