@@ -24,3 +24,11 @@ def test_int(x):
         expected = getattr(source, fname)(x)
         actual = run(llvm_ir, fname, sigs[fname], x)
         assert expected == actual
+
+
+@hypothesis.given(hypothesis.strategies.integers(int64_min/2, int64_max/2))
+def test_if_else(x):
+    fname = 'if_else'
+    expected = source.if_else(x)
+    actual = run(llvm_ir, fname, sigs[fname], x)
+    assert expected == actual

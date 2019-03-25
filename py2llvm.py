@@ -227,7 +227,52 @@ class BaseNodeVisitor:
         return cb(node, parent, *args) if cb is not None else None
 
 
-class BaseVisitor(BaseNodeVisitor):
+class NodeVisitor(BaseNodeVisitor):
+
+    def lookup(self, name):
+        if name in self.locals:
+            return self.locals[name]
+        return self.root.globals[name]
+
+    def Module_enter(self, node, parent):
+        self.root = node
+
+
+class BlockVisitor(NodeVisitor):
+    """
+    The algorithm makes 2 passes to the AST. This is the first one, here:
+
+    - We fail early for features we don't support.
+    - We populate the AST attaching structure IR objects (module, functions,
+      blocks). These will be used in the 2nd pass.
+
+    In general we should do here as much as we can.
+    """
+
+    def Module_enter(self, node, parent):
+        """
+        Module(stmt* body)
+        """
+        super().Module_enter(node, parent)
+        node.globals = {'float': float, 'int': int}
+
+        # This will be the final output of the whole process
+        node.module = ir.Module()
+        node.c_functypes = {} # Signatures for ctypes
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = node.ctx.__class__
+        if ctx is ast.Load:
+            try:
+                return self.lookup(name)
+            except KeyError:
+                pass
+
+        return None
 
     def FunctionDef_enter(self, node, parent):
 
@@ -240,42 +285,8 @@ class BaseVisitor(BaseNodeVisitor):
         assert node.returns is not None, 'expected type-hint for function return type'
 
         # Initialize function context
-        node.local_ns = {'float': float, 'int': int}
-        self.local_ns = node.local_ns
-
-
-class BlockVisitor(BaseVisitor):
-    """
-    The algorithm makes 2 passes to the AST. This is the first one, here:
-
-    - We fail early for features we don't support.
-    - We populate the AST attaching structure IR objects (module, functions,
-      blocks). These will be used in the 2nd pass.
-
-    In general we should do here as much as we can.
-    """
-
-    def Name_visit(self, node, parent):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        name = node.id
-        ctx = node.ctx.__class__
-        if ctx is ast.Load:
-            return self.local_ns.get(name)
-
-        return None
-
-    def Module_enter(self, node, parent):
-        """
-        Module(stmt* body)
-        """
-        self.root = node
-
-        # This will be the final output of the whole process
-        node.module = ir.Module()
-        node.c_functypes = {} # Signatures for ctypes
-
+        node.locals = {}
+        self.locals = node.locals
 
     def arguments_enter(self, node, parent):
         """
@@ -330,7 +341,7 @@ class BlockVisitor(BaseVisitor):
             ptr = builder.alloca(arg.type, name=name)
             builder.store(arg, ptr)
             # Keep Give a name to the arguments, and keep them in local namespace
-            node.local_ns[name] = ptr
+            node.locals[name] = ptr
 
         # Create the second block, this is where the code proper will start,
         # after allocation of the local variables.
@@ -367,7 +378,7 @@ class BlockVisitor(BaseVisitor):
         node.block_next = block
 
 
-class GenVisitor(BaseVisitor):
+class GenVisitor(NodeVisitor):
     """
     Builtin types are:
     identifier, int, string, bytes, object, singleton, constant
@@ -450,25 +461,6 @@ class GenVisitor(BaseVisitor):
 
         return value
 
-    def noop(self):
-        """
-        This is to support empty blocks, e.g. "if cond: pass"
-        """
-        self.builder.add(zero_int64, zero_int64)
-
-    def assign(self, name, value):
-        """
-        This is to support simple assignments, e.g. "b = a"
-        """
-        py_type = self.__get_type(value)
-        if py_type is int:
-            var = self.builder.add(value, zero_int64, name=name)
-        elif py_type is float:
-            var = self.builder.fadd(value, zero_double, name=name)
-
-        var.name = name
-        return var
-
     #
     # Leaf nodes
     #
@@ -481,7 +473,7 @@ class GenVisitor(BaseVisitor):
         ctx = node.ctx.__class__
 
         if ctx is ast.Load:
-            value = self.local_ns[name]
+            value = self.lookup(name)
             if type(value) is ir.AllocaInstr:
                 return self.builder.load(value)
             return value
@@ -525,7 +517,7 @@ class GenVisitor(BaseVisitor):
     #
 
     def FunctionDef_enter(self, node, parent):
-        self.local_ns = node.local_ns
+        self.locals = node.locals
         self.builder = node.builder
         self.f_rtype = node.f_rtype
         self.block_vars = node.block_vars
@@ -624,7 +616,6 @@ class GenVisitor(BaseVisitor):
     def If_orelse(self, node, parent, orelse):
         self.builder.branch(node.block_next)
         self.builder.position_at_end(node.block_next)
-        #self.noop()
 
     #
     # Other non-leaf nodes
@@ -639,7 +630,7 @@ class GenVisitor(BaseVisitor):
         assert value is not None
         assert simple == 1
         # LLVM does not support simple assignment to local variables.
-        self.local_ns[target] = value
+        self.locals[target] = value
         self.ltype = None
 
     def Assign_enter(self, node, parent):
@@ -652,16 +643,16 @@ class GenVisitor(BaseVisitor):
 
     def Assign_exit(self, node, parent, name, value):
         name = name[0]
-        py_type = self.__get_type(value)
-        ir_type = type_py2ir[py_type]
+        value = self.__py2ir(value)
 
-        ptr = self.local_ns.get(name)
-        if ptr is None:
+        try:
+            ptr = self.lookup(name)
+        except KeyError:
             block_cur = self.builder.block
             self.builder.position_at_end(self.block_vars)
-            ptr = self.builder.alloca(ir_type, name=name)
+            ptr = self.builder.alloca(value.type, name=name)
             self.builder.position_at_end(block_cur)
-            self.local_ns[name] = ptr
+            self.locals[name] = ptr
 
         return self.builder.store(value, ptr)
 
@@ -698,22 +689,18 @@ def py2llvm(node, debug=True):
 
 
 source = """
-def f(a: int) -> int:
-    if a == 0:
-        b = a + 1
-    elif a == 1:
-        b = a * 2
-    elif a == 2:
-        return 3
+def f(n: int) -> int:
+    if n == 0:
+        b = 5
     else:
-        b = a
+        b = 2
 
-    return b
+    return n * b
 
-#   b: int = 4
-#   c: int = (a + b) * 2 - 3
-#   c: int = c / 3
-#   return c
+#   if n <= 1:
+#       return n
+
+#   return f(n-1) + f(n-2)
 """
 
 if __name__ == '__main__':

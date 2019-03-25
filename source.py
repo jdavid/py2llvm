@@ -14,3 +14,12 @@ def ops() -> int:
 
 def double(x: int) -> int:
     return x * 2
+
+
+def if_else(a: int) -> int:
+    if a == 0:
+        b = 5
+    else:
+        b = 2
+
+    return a * b
