@@ -327,6 +327,7 @@ class BlockVisitor(NodeVisitor):
 
         # Create the function
         function = ir.Function(root.module, function_type, f_name)
+        self.root.globals[f_name] = function
 
         # Create the first block of the function, and the associated builder.
         # The first block, named "vars", is where all local variables will be
@@ -668,6 +669,13 @@ class GenVisitor(NodeVisitor):
         self.ltype = None
         return self.builder.ret(value)
 
+    def Call_exit(self, node, parent, func, args, keywords):
+        """
+        Call(expr func, expr* args, keyword* keywords)
+        """
+        assert not keywords
+        return self.builder.call(func, args)
+
 
 def py2llvm(node, debug=True):
     # Source to AST tree
@@ -690,17 +698,10 @@ def py2llvm(node, debug=True):
 
 source = """
 def f(n: int) -> int:
-    if n == 0:
-        b = 5
-    else:
-        b = 2
+    if n <= 1:
+        return n
 
-    return n * b
-
-#   if n <= 1:
-#       return n
-
-#   return f(n-1) + f(n-2)
+    return f(n-1) + f(n-2)
 """
 
 if __name__ == '__main__':
@@ -720,3 +721,6 @@ if __name__ == '__main__':
     run(llvm_ir, fname, sigs[fname], 1, debug=True)
     run(llvm_ir, fname, sigs[fname], 2, debug=True)
     run(llvm_ir, fname, sigs[fname], 3, debug=True)
+    run(llvm_ir, fname, sigs[fname], 4, debug=True)
+    run(llvm_ir, fname, sigs[fname], 5, debug=True)
+    run(llvm_ir, fname, sigs[fname], 6, debug=True)
