@@ -40,7 +40,7 @@ def compile_ir(engine, llvm_ir):
     return mod
 
 
-def run(llvm_ir, fname, cfunctype, *args):
+def run(llvm_ir, fname, cfunctype, *args, debug=False):
     engine = create_execution_engine()
     compile_ir(engine, llvm_ir)
 
@@ -49,4 +49,11 @@ def run(llvm_ir, fname, cfunctype, *args):
 
     # Run the function via ctypes
     cfunc = cfunctype(func_ptr)
-    return cfunc(*args)
+    value = cfunc(*args)
+
+    # Debug
+    if debug:
+        print(f'{args} => {value}')
+
+    # Ok
+    return value

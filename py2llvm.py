@@ -21,6 +21,11 @@ Types:
 - Type conversion can be explicit in an assignment, using type hints, e.g.
   "a: int = 2.0" the float literal will be converted to an integer.
 
+Local variables:
+
+- It's not possible to reuse the name of the same local variable for 2
+  different types. For instance "a = 2; a = 2.0" is forbidden.
+
 The return value:
 
 - The functions *must* always return a value.
@@ -312,9 +317,12 @@ class BlockVisitor(BaseVisitor):
         # Create the function
         function = ir.Function(root.module, function_type, f_name)
 
-        # Create the first block of the function, and the associated builder
-        block = function.append_basic_block('vars')
-        builder = ir.IRBuilder(block)
+        # Create the first block of the function, and the associated builder.
+        # The first block, named "vars", is where all local variables will be
+        # allocated. We will keep it open until we close the function in the
+        # 2nd pass.
+        block_vars = function.append_basic_block('vars')
+        builder = ir.IRBuilder(block_vars)
 
         # Function start: allocate a local variable for every argument
         for i, (name, py_type) in enumerate(f_args):
@@ -324,19 +332,17 @@ class BlockVisitor(BaseVisitor):
             # Keep Give a name to the arguments, and keep them in local namespace
             node.local_ns[name] = ptr
 
-        # Add another block
-        # We do this only for clarity of the generated IR. The first block
-        # named "start" is where we allocate the local variables for the
-        # function arguments. This second block is where the code proper will
-        # begin.
-        block = function.append_basic_block()
-        builder.branch(block)
-        builder.position_at_end(block)
+        # Create the second block, this is where the code proper will start,
+        # after allocation of the local variables.
+        block_start = function.append_basic_block('start')
+        builder.position_at_end(block_start)
 
         # Keep stuff we will need in this first pass
         self.function = function
 
         # Keep stuff for the second pass
+        node.block_vars = block_vars
+        node.block_start = block_start
         node.builder = builder
         node.f_rtype = returns
 
@@ -522,6 +528,11 @@ class GenVisitor(BaseVisitor):
         self.local_ns = node.local_ns
         self.builder = node.builder
         self.f_rtype = node.f_rtype
+        self.block_vars = node.block_vars
+
+    def FunctionDef_exit(self, node, parent, *args):
+        node.builder.position_at_end(node.block_vars)
+        node.builder.branch(node.block_start)
 
     def BinOp_exit(self, node, parent, left, op, right):
         # Two Python values
@@ -606,7 +617,8 @@ class GenVisitor(BaseVisitor):
         self.builder.position_at_end(node.block_true)
 
     def If_body(self, node, parent, body):
-        self.builder.branch(node.block_next)
+        if not self.builder.block.is_terminated:
+            self.builder.branch(node.block_next)
         self.builder.position_at_end(node.block_false)
 
     def If_orelse(self, node, parent, orelse):
@@ -645,7 +657,10 @@ class GenVisitor(BaseVisitor):
 
         ptr = self.local_ns.get(name)
         if ptr is None:
+            block_cur = self.builder.block
+            self.builder.position_at_end(self.block_vars)
             ptr = self.builder.alloca(ir_type, name=name)
+            self.builder.position_at_end(block_cur)
             self.local_ns[name] = ptr
 
         return self.builder.store(value, ptr)
@@ -686,6 +701,10 @@ source = """
 def f(a: int) -> int:
     if a == 0:
         b = a + 1
+    elif a == 1:
+        b = a * 2
+    elif a == 2:
+        return 3
     else:
         b = a
 
@@ -710,6 +729,7 @@ if __name__ == '__main__':
     print(llvm_ir)
     print('====== Output ======')
     fname = 'f'
-    print(run(llvm_ir, fname, sigs[fname], 0))
-    print(run(llvm_ir, fname, sigs[fname], 1))
-    print(run(llvm_ir, fname, sigs[fname], 2))
+    run(llvm_ir, fname, sigs[fname], 0, debug=True)
+    run(llvm_ir, fname, sigs[fname], 1, debug=True)
+    run(llvm_ir, fname, sigs[fname], 2, debug=True)
+    run(llvm_ir, fname, sigs[fname], 3, debug=True)
