@@ -196,6 +196,9 @@ class BaseNodeVisitor:
             if cb is not None:
                 break
 
+        # Call
+        value = cb(node, parent, *args) if cb is not None else None
+
         # Debug
         if self.debug:
             name = node.__class__.__name__
@@ -206,7 +209,7 @@ class BaseNodeVisitor:
                 else:
                     print(self.depth * ' '  + f'<{name}>')
             elif event == 'exit':
-                print(self.depth * ' '  + f'</{name}>')
+                print(self.depth * ' '  + f'</{name}> -> {value}')
 #               if args:
 #                   attrs = ' '.join(repr(x) for x in args)
 #                   print(self.depth * ' '  + f'</{name} {attrs}>')
@@ -223,8 +226,7 @@ class BaseNodeVisitor:
                     attrs = ' '.join([repr(x) for x in args])
                     print(self.depth * ' '  + f'.{event}={attrs}')
 
-        # Call
-        return cb(node, parent, *args) if cb is not None else None
+        return value
 
 
 class NodeVisitor(BaseNodeVisitor):
@@ -489,8 +491,14 @@ class GenVisitor(NodeVisitor):
         """
         return node.n
 
+    def boolop_visit(self, node, parent):
+        return type(node)
+
     def operator_visit(self, node, parent):
-        return node
+        return type(node)
+
+    def unaryop_visit(self, node, parent):
+        return type(node)
 
     def Eq_visit(self, node, parent):
         return '=='
@@ -536,10 +544,10 @@ class GenVisitor(NodeVisitor):
                 ast.Mult: operator.mul,
                 ast.Div: operator.truediv,
             }
-            py_op = ast2op.get(op.__class__)
+            py_op = ast2op.get(op)
             if py_op is None:
                 raise NotImplementedError(
-                    f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+                    f'{op.__name__} operator for {self.ltype} type not implemented')
             return py_op(left, right)
 
         # One or more IR values
@@ -557,10 +565,10 @@ class GenVisitor(NodeVisitor):
             (ast.Mult, float): self.builder.fmul,
             (ast.Div,  float): self.builder.fdiv,
         }
-        ir_op = d.get((op.__class__, py_type))
+        ir_op = d.get((op, py_type))
         if ir_op is None:
             raise NotImplementedError(
-                f'{op.__class__.__name__} operator for {self.ltype} type not implemented')
+                f'{op.__name__} operator for {self.ltype} type not implemented')
 
         return ir_op(left, right)
 
@@ -598,6 +606,28 @@ class GenVisitor(NodeVisitor):
         ir_op = d.get(py_type)
         return ir_op(op, left, right)
 
+    def BoolOp_exit(self, node, parent, op, values):
+        """
+        BoolOp(boolop op, expr* values)
+        """
+        ir_op = {
+            ast.And: self.builder.and_,
+            ast.Or: self.builder.or_,
+        }[op]
+
+        assert len(values) == 2
+        left, right = values
+        return ir_op(left, right)
+
+    def UnaryOp_exit(self, node, parent, op, operand):
+        """
+        UnaryOp(unaryop op, expr operand)
+        """
+        ir_op = {
+            ast.Not: self.builder.not_,
+        }[op]
+
+        return ir_op(operand)
 
     #
     # if .. elif .. else
@@ -697,11 +727,13 @@ def py2llvm(node, debug=True):
 
 
 source = """
-def f(n: int) -> int:
-    if n <= 1:
-        return n
+def f(a: int, b: int, c: int) -> int:
+    if a < b and b < c:
+        return c
+    if not (a < b):
+        return b
 
-    return f(n-1) + f(n-2)
+    return a * 2
 """
 
 if __name__ == '__main__':
@@ -717,10 +749,6 @@ if __name__ == '__main__':
     print(llvm_ir)
     print('====== Output ======')
     fname = 'f'
-    run(llvm_ir, fname, sigs[fname], 0, debug=True)
-    run(llvm_ir, fname, sigs[fname], 1, debug=True)
-    run(llvm_ir, fname, sigs[fname], 2, debug=True)
-    run(llvm_ir, fname, sigs[fname], 3, debug=True)
-    run(llvm_ir, fname, sigs[fname], 4, debug=True)
-    run(llvm_ir, fname, sigs[fname], 5, debug=True)
-    run(llvm_ir, fname, sigs[fname], 6, debug=True)
+    run(llvm_ir, fname, sigs[fname], 0, 1, 2, debug=True)
+    run(llvm_ir, fname, sigs[fname], 0, 2, 1, debug=True)
+    run(llvm_ir, fname, sigs[fname], 2, 1, 0, debug=True)

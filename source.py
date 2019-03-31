@@ -30,3 +30,13 @@ def fibo(n: int) -> int:
         return n
 
     return fibo(n-1) + fibo(n-2)
+
+
+def boolean(a: int, b: int, c: int) -> int:
+    if (a < b and b < c) or c < a:
+        return c * b
+
+    if not (a < b):
+        return b
+
+    return a * 2
