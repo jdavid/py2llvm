@@ -218,9 +218,13 @@ class BaseNodeVisitor:
             elif event == 'visit':
                 if node._fields:
                     attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
-                    print(self.depth * ' '  + f'<{name} {attrs} />')
+                    print(self.depth * ' '  + f'<{name} {attrs} />', end='')
                 else:
-                    print(self.depth * ' '  + f'<{name} />')
+                    print(self.depth * ' '  + f'<{name} />', end='')
+                if cb is None:
+                    print()
+                else:
+                    print(f' -> {value}')
             else:
                 if cb is not None:
                     attrs = ' '.join([repr(x) for x in args])
@@ -412,12 +416,13 @@ class GenVisitor(NodeVisitor):
         if isinstance(value, ir.Value):
             vtype = {
                 ir.IntType: int,
-                ir.DoubleType: float
+                ir.DoubleType: float,
+                ir.ArrayType: list,
             }.get(value.type.__class__)
         else:
             vtype = type(value)
 
-        if vtype in (int, float):
+        if vtype in (int, float, list):
             return vtype
 
         raise NotImplementedError(f'only int and float supported, got {repr(value)}')
@@ -434,6 +439,10 @@ class GenVisitor(NodeVisitor):
         return float
 
     def __py2ir(self, value, dst_type=None):
+        is_ir_value = isinstance(value, ir.Value)
+        if dst_type is None and is_ir_value:
+            return value
+
         src_type = self.__get_type(value)
 
         # If target type is not given, will be same as source type
@@ -444,7 +453,7 @@ class GenVisitor(NodeVisitor):
         dst_type_ir = type_py2ir[dst_type]
 
         # If Python value, return a constant
-        if not isinstance(value, ir.Value):
+        if not is_ir_value:
             if src_type is not dst_type:
                 value = dst_type(value)
 
@@ -520,6 +529,21 @@ class GenVisitor(NodeVisitor):
 
     def object_visit(self, node, parent):
         raise NotImplementedError(f'{node.__class__} not supported')
+
+    #
+    # Literals
+    #
+
+    def List_exit(self, node, parent, elts, ctx):
+        """
+        List(expr* elts, expr_context ctx)
+        """
+        py_types = {type(x) for x in elts}
+        assert len(py_types) == 1, 'all list elements must be of the same type'
+        py_type = py_types.pop()
+        el_type = type_py2ir[py_type]
+        typ = ir.ArrayType(el_type, len(elts))
+        return ir.Constant(typ, elts)
 
     #
     # Expressions
@@ -728,6 +752,7 @@ def py2llvm(node, debug=True):
 
 source = """
 def f(a: int, b: int, c: int) -> int:
+    l = [1, 2, 3]
     if a < b and b < c:
         return c
     if not (a < b):
