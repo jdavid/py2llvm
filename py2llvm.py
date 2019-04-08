@@ -71,8 +71,8 @@ from run import run
 
 double = ir.DoubleType()
 int64 = ir.IntType(64)
-zero_int64 = ir.Constant(int64, 0)
-zero_double = ir.Constant(double, 0)
+zero = ir.Constant(int64, 0)
+one = ir.Constant(int64, 1)
 
 type_py2ir = {
     float: double,
@@ -228,7 +228,7 @@ class BaseNodeVisitor:
             else:
                 if cb is not None:
                     attrs = ' '.join([repr(x) for x in args])
-                    print(self.depth * ' '  + f'.{event}={attrs}')
+                    print(self.depth * ' '  + f'_{event}({attrs})')
 
         return value
 
@@ -373,16 +373,24 @@ class BlockVisitor(NodeVisitor):
         """
         If(expr test, stmt* body, stmt* orelse)
         """
-        block = self.function.append_basic_block()
-        node.block_true = block
+        node.block_true = self.function.append_basic_block()
 
     def If_body(self, node, parent, body):
-        block = self.function.append_basic_block()
-        node.block_false = block
+        node.block_false = self.function.append_basic_block()
 
     def If_orelse(self, node, parent, orelse):
-        block = self.function.append_basic_block()
-        node.block_next = block
+        node.block_next = self.function.append_basic_block()
+
+    def For_enter(self, node, parent):
+        """
+        For(expr target, expr iter, stmt* body, stmt* orelse)
+        """
+        assert not node.orelse, '"for ... else .." not supported'
+        node.block_for = self.function.append_basic_block('for')
+        node.block_body = self.function.append_basic_block('for_body')
+
+    def For_exit(self, node, parent, *args):
+        node.block_next = self.function.append_basic_block('for_out')
 
 
 class GenVisitor(NodeVisitor):
@@ -539,8 +547,14 @@ class GenVisitor(NodeVisitor):
         List(expr* elts, expr_context ctx)
         """
         py_types = {type(x) for x in elts}
-        assert len(py_types) == 1, 'all list elements must be of the same type'
-        py_type = py_types.pop()
+        n = len(py_types)
+        if n == 0:
+            py_type = int # any type will do because the list is empty
+        elif n == 1:
+            py_type = py_types.pop()
+        else:
+            raise TypeError('all list elements must be of the same type')
+
         el_type = type_py2ir[py_type]
         typ = ir.ArrayType(el_type, len(elts))
         return ir.Constant(typ, elts)
@@ -673,6 +687,30 @@ class GenVisitor(NodeVisitor):
         self.builder.position_at_end(node.block_next)
 
     #
+    # for ...
+    #
+    def For_iter(self, node, parent, expr):
+        node.i = self.builder.alloca(int64, name='i')
+        self.builder.store(zero, node.i)                # i = 0
+        self.builder.branch(node.block_for)             # br %for
+        self.builder.position_at_end(node.block_for)    # %for
+        n = ir.Constant(int64, expr.type.count)         # n = len(expr)
+        left = self.builder.load(node.i)                # %left = i
+        test = self.builder.icmp_unsigned('<', left, n) # %left < n
+        self.builder.cbranch(test, node.block_body, node.block_next) # br %test %body %next
+        self.builder.position_at_end(node.block_body)   # %body
+#       x = self.builder.load(node.i)                   # % = i
+#       x = self.builder.extract_value(expr, x)         # % = expr[%]
+#       self.locals[node.target.id] = x
+
+    def For_exit(self, node, parent, *args):
+        a = self.builder.load(node.i)                   # % = i
+        b = self.builder.add(a, one)                    # % = % + 1
+        self.builder.store(b, node.i)                   # i = %
+        self.builder.branch(node.block_for)             # br %for
+        self.builder.position_at_end(node.block_next)   # %next
+
+    #
     # Other non-leaf nodes
     #
     def AnnAssign_annotation(self, node, parent, value):
@@ -751,14 +789,12 @@ def py2llvm(node, debug=True):
 
 
 source = """
-def f(a: int, b: int, c: int) -> int:
-    l = [1, 2, 3]
-    if a < b and b < c:
-        return c
-    if not (a < b):
-        return b
+def f() -> int:
+    acc = 0
+    for x in [1, 2, 3]:
+        acc = acc + 1
 
-    return a * 2
+    return acc
 """
 
 if __name__ == '__main__':
@@ -774,6 +810,6 @@ if __name__ == '__main__':
     print(llvm_ir)
     print('====== Output ======')
     fname = 'f'
-    run(llvm_ir, fname, sigs[fname], 0, 1, 2, debug=True)
-    run(llvm_ir, fname, sigs[fname], 0, 2, 1, debug=True)
-    run(llvm_ir, fname, sigs[fname], 2, 1, 0, debug=True)
+    run(llvm_ir, fname, sigs[fname], debug=True)
+#   run(llvm_ir, fname, sigs[fname], 0, 2, 1, debug=True)
+#   run(llvm_ir, fname, sigs[fname], 2, 1, 0, debug=True)
