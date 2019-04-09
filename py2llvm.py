@@ -70,18 +70,19 @@ from run import run
 
 
 double = ir.DoubleType()
-int64 = ir.IntType(64)
-zero = ir.Constant(int64, 0)
-one = ir.Constant(int64, 1)
+i64 = ir.IntType(64)
+i64p = ir.PointerType(i64)
+zero = ir.Constant(i64, 0)
+one = ir.Constant(i64, 1)
 
 type_py2ir = {
     float: double,
-    int: int64,
+    int: i64,
 }
 
 type_ir2py = {
     double: float,
-    int64: int,
+    i64: int,
 }
 
 type_py2c = {
@@ -433,7 +434,9 @@ class GenVisitor(NodeVisitor):
         if vtype in (int, float, list):
             return vtype
 
-        raise NotImplementedError(f'only int and float supported, got {repr(value)}')
+        raise NotImplementedError(
+            f'only int and float supported, got {repr(value)}'
+        )
 
     def __get_lr_type(self, left, right):
         """
@@ -495,7 +498,8 @@ class GenVisitor(NodeVisitor):
         if ctx is ast.Load:
             value = self.lookup(name)
             if type(value) is ir.AllocaInstr:
-                return self.builder.load(value)
+                if not isinstance(value.type.pointee, ir.Aggregate):
+                    return self.builder.load(value)
             return value
 
         if ctx is ast.Store:
@@ -667,6 +671,22 @@ class GenVisitor(NodeVisitor):
 
         return ir_op(operand)
 
+    def Index_exit(self, node, parent, value):
+        """
+        Index(expr value)
+        """
+        assert type(value) is int
+        return value
+
+    def Subscript_exit(self, node, parent, value, slice, ctx):
+        """
+        Subscript(expr value, slice slice, expr_context ctx)
+        """
+        idx = self.__py2ir(slice)
+        ptr = self.builder.gep(value, [zero, idx])
+        #value.type.pointee.element.as_pointer()
+        return self.builder.load(ptr)
+
     #
     # if .. elif .. else
     #
@@ -690,11 +710,11 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(int64, name='i')
+        node.i = self.builder.alloca(i64, name='i')
         self.builder.store(zero, node.i)                # i = 0
         self.builder.branch(node.block_for)             # br %for
         self.builder.position_at_end(node.block_for)    # %for
-        n = ir.Constant(int64, expr.type.count)         # n = len(expr)
+        n = ir.Constant(i64, expr.type.count)         # n = len(expr)
         left = self.builder.load(node.i)                # %left = i
         test = self.builder.icmp_unsigned('<', left, n) # %left < n
         self.builder.cbranch(test, node.block_body, node.block_next) # br %test %body %next
@@ -790,11 +810,8 @@ def py2llvm(node, debug=True):
 
 source = """
 def f() -> int:
-    acc = 0
-    for x in [1, 2, 3]:
-        acc = acc + 1
-
-    return acc
+    l = [1, 2, 3]
+    return l[1]
 """
 
 if __name__ == '__main__':
