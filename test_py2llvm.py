@@ -40,7 +40,7 @@ def test_if_else(x):
 
 
 @given(integers(0, 20))
-def test_fibo(x):
+def test_call(x):
     fname = 'fibo'
     expected = getattr(source, fname)(x)
     actual = run(llvm_ir, fname, sigs[fname], x)
@@ -56,4 +56,11 @@ def test_boolean(a, b, c):
     fname = 'boolean'
     expected = getattr(source, fname)(a, b, c)
     actual = run(llvm_ir, fname, sigs[fname], a, b, c)
+    assert expected == actual
+
+
+def test_loop():
+    fname = 'sum'
+    expected = getattr(source, fname)()
+    actual = run(llvm_ir, fname, sigs[fname])
     assert expected == actual

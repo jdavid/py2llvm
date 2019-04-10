@@ -71,7 +71,6 @@ from run import run
 
 double = ir.DoubleType()
 i64 = ir.IntType(64)
-i64p = ir.PointerType(i64)
 zero = ir.Constant(i64, 0)
 one = ir.Constant(i64, 1)
 
@@ -684,7 +683,6 @@ class GenVisitor(NodeVisitor):
         """
         idx = self.__py2ir(slice)
         ptr = self.builder.gep(value, [zero, idx])
-        #value.type.pointee.element.as_pointer()
         return self.builder.load(ptr)
 
     #
@@ -710,18 +708,22 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(i64, name='i')
+        node.i = self.builder.alloca(i64, name='i')     # i
         self.builder.store(zero, node.i)                # i = 0
+        arr = self.builder.alloca(expr.type)            # arr
+        self.builder.store(expr, arr)                   # arr = expr
+        n = ir.Constant(i64, expr.type.count)           # n = len(expr)
         self.builder.branch(node.block_for)             # br %for
+
         self.builder.position_at_end(node.block_for)    # %for
-        n = ir.Constant(i64, expr.type.count)         # n = len(expr)
-        left = self.builder.load(node.i)                # %left = i
-        test = self.builder.icmp_unsigned('<', left, n) # %left < n
+        idx = self.builder.load(node.i)                 # %idx = i
+        test = self.builder.icmp_unsigned('<', idx, n)  # %idx < n
         self.builder.cbranch(test, node.block_body, node.block_next) # br %test %body %next
+
         self.builder.position_at_end(node.block_body)   # %body
-#       x = self.builder.load(node.i)                   # % = i
-#       x = self.builder.extract_value(expr, x)         # % = expr[%]
-#       self.locals[node.target.id] = x
+        ptr = self.builder.gep(arr, [zero, idx])        # expr[idx]
+        x = self.builder.load(ptr)                      # % = expr[i]
+        self.locals[node.target.id] = x
 
     def For_exit(self, node, parent, *args):
         a = self.builder.load(node.i)                   # % = i
@@ -810,8 +812,10 @@ def py2llvm(node, debug=True):
 
 source = """
 def f() -> int:
-    l = [1, 2, 3]
-    return l[1]
+    acc = 0
+    for x in [1, 2, 3, 4, 5]:
+        acc = acc + x
+    return acc
 """
 
 if __name__ == '__main__':
