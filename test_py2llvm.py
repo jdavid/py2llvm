@@ -1,8 +1,7 @@
 from hypothesis import given
 from hypothesis.strategies import integers
 
-from py2llvm import py2llvm
-from run import run
+from py2llvm import LLVM
 import source
 
 
@@ -13,13 +12,15 @@ int32_min = -2**31
 int32_max = 2**31-1
 
 
-llvm_ir, sigs = py2llvm(open(f'source.py').read())
+with open(f'source.py') as f:
+    llvm = LLVM(f.read())
+
 
 def test_no_args():
     fnames = 'ret_const', 'ret_var', 'ops'
     for fname in fnames:
         expected = getattr(source, fname)()
-        actual = run(llvm_ir, fname, sigs[fname])
+        actual = llvm.run(fname)
         assert expected == actual
 
 
@@ -27,7 +28,7 @@ def test_no_args():
 def test_int(x):
     fname = 'double'
     expected = getattr(source, fname)(x)
-    actual = run(llvm_ir, fname, sigs[fname], x)
+    actual = llvm.run(fname, x)
     assert expected == actual
 
 
@@ -35,7 +36,7 @@ def test_int(x):
 def test_if_else(x):
     fname = 'if_else'
     expected = getattr(source, fname)(x)
-    actual = run(llvm_ir, fname, sigs[fname], x)
+    actual = llvm.run(fname, x)
     assert expected == actual
 
 
@@ -43,7 +44,7 @@ def test_if_else(x):
 def test_call(x):
     fname = 'fibo'
     expected = getattr(source, fname)(x)
-    actual = run(llvm_ir, fname, sigs[fname], x)
+    actual = llvm.run(fname, x)
     assert expected == actual
 
 
@@ -55,12 +56,12 @@ def test_call(x):
 def test_boolean(a, b, c):
     fname = 'boolean'
     expected = getattr(source, fname)(a, b, c)
-    actual = run(llvm_ir, fname, sigs[fname], a, b, c)
+    actual = llvm.run(fname, a, b, c)
     assert expected == actual
 
 
 def test_loop():
     fname = 'sum'
     expected = getattr(source, fname)()
-    actual = run(llvm_ir, fname, sigs[fname])
+    actual = llvm.run(fname)
     assert expected == actual

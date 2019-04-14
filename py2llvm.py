@@ -63,10 +63,11 @@ About LLVM:
 import argparse
 import ast
 import ctypes
+import inspect
 import operator
 
 from llvmlite import ir
-from run import run
+from llvmlite import binding
 
 
 double = ir.DoubleType()
@@ -791,32 +792,89 @@ class GenVisitor(NodeVisitor):
         return self.builder.call(func, args)
 
 
-def py2llvm(node, debug=True):
-    # Source to AST tree
-    node = ast.parse(node)
+# All these initializations are required for code generation!
+binding.initialize()
+binding.initialize_native_target()
+binding.initialize_native_asmprinter()  # yes, even this one
 
-    # 1st pass: structure
-    if debug:
-        print('====== Debug: 1st pass ======')
-    BlockVisitor(debug).traverse(node)
+class LLVM:
 
-    # 2nd pass: generate
-    if debug:
-        print('====== Debug: 2nd pass ======')
-    GenVisitor(debug).traverse(node)
+    def __init__(self, source, debug=True):
+        if type(source) is not str:
+            source = inspect.getsource(source)
 
-    # Return IR (and ctypes signatures)
-    llvm_ir = str(node.module)
-    return llvm_ir, node.c_functypes
+        # Source to AST tree
+        node = ast.parse(source)
+
+        # 1st pass: structure
+        if debug:
+            print('====== Debug: 1st pass ======')
+        BlockVisitor(debug).traverse(node)
+
+        # 2nd pass: generate
+        if debug:
+            print('====== Debug: 2nd pass ======')
+        GenVisitor(debug).traverse(node)
+
+        # Output
+        self.source = source         # Python source
+        self.ir = str(node.module)   # IR
+        self.sigs = node.c_functypes # c types signatures
+
+    def create_execution_engine(self):
+        """
+        Create an ExecutionEngine suitable for JIT code generation on
+        the host CPU.  The engine is reusable for an arbitrary number of
+        modules.
+        """
+        # Create a target machine representing the host
+        target = binding.Target.from_default_triple()
+        target_machine = target.create_target_machine()
+        # And an execution engine with an empty backing module
+        backing_mod = binding.parse_assembly("")
+        engine = binding.create_mcjit_compiler(backing_mod, target_machine)
+        return engine
 
 
-source = """
+    def compile_ir(self, engine, llvm_ir):
+        """
+        Compile the LLVM IR string with the given engine.
+        The compiled module object is returned.
+        """
+        # Create a LLVM module object from the IR
+        mod = binding.parse_assembly(llvm_ir)
+        mod.verify()
+        # Now add the module and make sure it is ready for execution
+        engine.add_module(mod)
+        engine.finalize_object()
+        engine.run_static_constructors()
+        return mod
+
+
+    def run(self, fname, *args, debug=False):
+        engine = self.create_execution_engine()
+        self.compile_ir(engine, self.ir)
+
+        # Look up the function pointer (a Python int)
+        func_ptr = engine.get_function_address(fname)
+
+        # Run the function via ctypes
+        cfunc = self.sigs[fname](func_ptr)
+        value = cfunc(*args)
+
+        # Debug
+        if debug:
+            print(f'{args} => {value}')
+
+        # Ok
+        return value
+
+
 def f() -> int:
     acc = 0
     for x in [1, 2, 3, 4, 5]:
         acc = acc + x
     return acc
-"""
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -825,12 +883,11 @@ if __name__ == '__main__':
     debug = args.debug
 
     print('====== Source ======')
-    print(source)
-    llvm_ir, sigs = py2llvm(source, debug=debug)
+    llvm = LLVM(f, debug=debug)
     print('====== IR ======')
-    print(llvm_ir)
+    print(llvm.ir)
     print('====== Output ======')
     fname = 'f'
-    run(llvm_ir, fname, sigs[fname], debug=True)
+    llvm.run(fname, debug=True)
 #   run(llvm_ir, fname, sigs[fname], 0, 2, 1, debug=True)
 #   run(llvm_ir, fname, sigs[fname], 2, 1, 0, debug=True)
