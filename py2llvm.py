@@ -60,11 +60,11 @@ About LLVM:
 """
 
 # Standard Library
-import argparse
 import ast
 import ctypes
 import inspect
 import operator
+import types
 
 from llvmlite import ir
 from llvmlite import binding
@@ -792,34 +792,105 @@ class GenVisitor(NodeVisitor):
         return self.builder.call(func, args)
 
 
-# All these initializations are required for code generation!
-binding.initialize()
-binding.initialize_native_target()
-binding.initialize_native_asmprinter()  # yes, even this one
+def py2llvm(engine, source, debug):
+    assert type(source) is str
+
+    # Source to AST tree
+    node = ast.parse(source)
+
+    # 1st pass: structure
+    if debug:
+        print('====== Debug: 1st pass ======')
+    BlockVisitor(debug).traverse(node)
+
+    # 2nd pass: generate
+    if debug:
+        print('====== Debug: 2nd pass ======')
+    GenVisitor(debug).traverse(node)
+
+    # Compile
+    ir = str(node.module)
+    llvm.compile_ir(engine, ir)
+
+    # Output
+    return ir, node.c_functypes
+
+
+class LLVMFunction:
+    """
+    Wraps a Python function. Compiled to IR, it can be executed with ctypes:
+
+    f(...)
+
+    Besides calling the function a number of attributes are available:
+
+    name        -- the name of the function
+    py_function -- the original Python function
+    py_source   -- the source code of the Python function
+    ir          -- LLVM's IR code
+    c_signature -- the C signature, used when calling
+    c_function  -- the C function (only this one is needed to make the call)
+    """
+
+    def __init__(self, engine, name, c_signature,
+                 py_function=None, py_source=None, ir=None):
+
+        # Get the function
+        func_ptr = engine.get_function_address(name)
+        self.c_function = c_signature(func_ptr)
+
+        # Keep stuff for introspection
+        self.c_signature = c_signature
+        self.name = name
+        # Optional stuff
+        self.py_function = py_function
+        self.py_source = py_source
+        self.ir = ir
+
+    def __call__(self, *args, debug=False):
+        value = self.c_function(*args)
+        if debug:
+            print(f'{args} => {value}')
+
+        return value
+
 
 class LLVM:
 
-    def __init__(self, source, debug=True):
-        if type(source) is not str:
-            source = inspect.getsource(source)
+    def __init__(self):
+        self.functions = {}
+        self.engine = self.create_execution_engine()
+        self.py_source = []
+        self.__ir = []
 
-        # Source to AST tree
-        node = ast.parse(source)
+    def __call__(self, py_source, debug=False):
+        if type(py_source) is types.FunctionType:
+            py_function = py_source
+            py_source = inspect.getsource(py_function) # Python source code
+            ir, csigs = py2llvm(self.engine, py_source, debug=debug)
+            self.__ir.append(ir)
 
-        # 1st pass: structure
-        if debug:
-            print('====== Debug: 1st pass ======')
-        BlockVisitor(debug).traverse(node)
+            name = py_function.__name__
+            f = LLVMFunction(self.engine, name, csigs[name],
+                             py_function, py_source, ir)
+            self.functions[name] = f
+            return f
+        elif type(py_source) is str:
+            ir, csigs = py2llvm(self.engine, py_source, debug=debug)
+            self.__ir.append(ir)
 
-        # 2nd pass: generate
-        if debug:
-            print('====== Debug: 2nd pass ======')
-        GenVisitor(debug).traverse(node)
+            for name, c_signature in csigs.items():
+                f =  LLVMFunction(self.engine, name, c_signature)
+                self.functions[f.name] = f
+        else:
+            raise TypeError(f'Unexpected {type(py_source)} type')
 
-        # Output
-        self.source = source         # Python source
-        self.ir = str(node.module)   # IR
-        self.sigs = node.c_functypes # c types signatures
+    def __getitem__(self, name):
+        return self.functions[name]
+
+    @property
+    def ir(self):
+        return '\n'.join(self.__ir)
 
     def create_execution_engine(self):
         """
@@ -834,7 +905,6 @@ class LLVM:
         backing_mod = binding.parse_assembly("")
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
         return engine
-
 
     def compile_ir(self, engine, llvm_ir):
         """
@@ -851,43 +921,9 @@ class LLVM:
         return mod
 
 
-    def run(self, fname, *args, debug=False):
-        engine = self.create_execution_engine()
-        self.compile_ir(engine, self.ir)
+# All these initializations are required for code generation!
+binding.initialize()
+binding.initialize_native_target()
+binding.initialize_native_asmprinter()  # yes, even this one
 
-        # Look up the function pointer (a Python int)
-        func_ptr = engine.get_function_address(fname)
-
-        # Run the function via ctypes
-        cfunc = self.sigs[fname](func_ptr)
-        value = cfunc(*args)
-
-        # Debug
-        if debug:
-            print(f'{args} => {value}')
-
-        # Ok
-        return value
-
-
-def f() -> int:
-    acc = 0
-    for x in [1, 2, 3, 4, 5]:
-        acc = acc + x
-    return acc
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true')
-    args = parser.parse_args()
-    debug = args.debug
-
-    print('====== Source ======')
-    llvm = LLVM(f, debug=debug)
-    print('====== IR ======')
-    print(llvm.ir)
-    print('====== Output ======')
-    fname = 'f'
-    llvm.run(fname, debug=True)
-#   run(llvm_ir, fname, sigs[fname], 0, 2, 1, debug=True)
-#   run(llvm_ir, fname, sigs[fname], 2, 1, 0, debug=True)
+llvm = LLVM()
