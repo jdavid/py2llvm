@@ -12,40 +12,33 @@ int32_min = -2**31
 int32_max = 2**31-1
 
 
-with open(f'source.py') as f:
-    llvm(f.read())
-
-
 def test_no_args():
     fnames = 'ret_const', 'ret_var', 'ops'
     for fname in fnames:
-        expected = getattr(source, fname)()
-        actual = llvm[fname]()
-        assert expected == actual
+        f = getattr(source, fname)
+        fc = llvm.compile(f)
+        assert f() == fc()
 
 
 @given(integers(int64_min//2, int64_max//2))
 def test_int(x):
-    fname = 'double'
-    expected = getattr(source, fname)(x)
-    actual = llvm[fname](x)
-    assert expected == actual
+    f = source.double
+    fc = llvm.compile(f)
+    assert f(x) == fc(x)
 
 
 @given(integers(int64_min/2, int64_max/2))
 def test_if_else(x):
-    fname = 'if_else'
-    expected = getattr(source, fname)(x)
-    actual = llvm[fname](x)
-    assert expected == actual
+    f = source.if_else
+    fc = llvm.compile(f)
+    assert f(x) == fc(x)
 
 
 @given(integers(0, 20))
 def test_call(x):
-    fname = 'fibo'
-    expected = getattr(source, fname)(x)
-    actual = llvm[fname](x)
-    assert expected == actual
+    f = source.fibo
+    fc = llvm.compile(f)
+    assert f(x) == fc(x)
 
 
 @given(
@@ -54,14 +47,12 @@ def test_call(x):
     integers(int32_min//2, int32_max//2),
 )
 def test_boolean(a, b, c):
-    fname = 'boolean'
-    expected = getattr(source, fname)(a, b, c)
-    actual = llvm[fname](a, b, c)
-    assert expected == actual
+    f = source.boolean
+    fc = llvm.compile(f)
+    assert f(a, b, c) == fc(a, b, c)
 
 
 def test_loop():
-    fname = 'sum'
-    expected = getattr(source, fname)()
-    actual = llvm[fname]()
-    assert expected == actual
+    f = source.sum
+    fc = llvm.compile(f)
+    assert f() == fc()

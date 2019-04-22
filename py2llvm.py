@@ -1,6 +1,14 @@
 """
 This program translates a small subset of Python to LLVM IR.
 
+Usage:
+
+  import py2llvm as llvm
+  def f() -> llvm.double:
+    ...
+
+  f = llvm.compile(f)
+
 Notes:
 
 - Only a very small subset is implemented.
@@ -9,12 +17,19 @@ Notes:
   to 64 bit doubles in LLVM.
 - Function arguments and return values *must* be typed (type hints).
 
+Types. The supported types are float, double, int32 and int64. It's also
+possible to use Python's float and int types, they are considered aliases to
+double and int64 respectively.
+
+The compiled functions will be called using ctypes, so the allowed
+argument types are a subset of the types available in ctypes.
+
 Literals:
 
 - The "2" literal is an integer, the "2.0" literal is a float.
 - No other literal is allowed (None, etc.)
 
-Types:
+Type conversion:
 
 - Type conversion is done automatically, integers are converted to floats if
   one operand is a float.
@@ -61,35 +76,118 @@ About LLVM:
 
 # Standard Library
 import ast
+import builtins
 import ctypes
 import inspect
 import operator
-import types
+from types import FunctionType
 
 from llvmlite import ir
 from llvmlite import binding
 
+#
+# Types and constants
+#
 
-double = ir.DoubleType()
-i64 = ir.IntType(64)
-zero = ir.Constant(i64, 0)
-one = ir.Constant(i64, 1)
+class types:
+    float = ir.FloatType()
+    double = ir.DoubleType()
+    int32 = ir.IntType(32)
+    int64 = ir.IntType(64)
 
-type_py2ir = {
-    float: double,
-    int: i64,
-}
 
-type_ir2py = {
-    double: float,
-    i64: int,
-}
+zero = ir.Constant(types.int64, 0)
+one = ir.Constant(types.int64, 1)
 
-type_py2c = {
-    float: ctypes.c_double,
-    int: ctypes.c_int64,
-}
 
+def value_to_type(value):
+    """
+    Given a Python or IR value, return its Python or IR type.
+    """
+    return value.type if isinstance(value, ir.Value) else type(value)
+
+
+def type_to_ir_type(type_):
+    """
+    Given a Python or IR type, return the corresponding IR type.
+    """
+    if isinstance(type_, ir.Type):
+        return type_
+
+    return {
+        float: types.double,
+        int: types.int64,
+    }[type_]
+
+
+def value_to_ir_type(value):
+    """
+    Given a Python or IR value, return it's IR type.
+    """
+    type_ = value_to_type(value)
+    return type_to_ir_type(type_)
+
+
+def values_to_type(left, right):
+    """
+    Given two values return their type. If mixing Python and IR values, IR
+    wins. If mixing integers and floats, float wins.
+
+    If mixing different lengths the longer one wins (e.g. float and double).
+    """
+    ltype = value_to_type(left)
+    rtype = value_to_type(right)
+
+    # Both are Python
+    if not isinstance(ltype, ir.Type) and not isinstance(rtype, ir.Type):
+        if ltype is float or rtype is float:
+            return float
+
+        return int
+
+    # At least 1 is IR
+    ltype = type_to_ir_type(ltype)
+    rtype = type_to_ir_type(ltype)
+
+    if ltype is types.double or rtype is types.double:
+        return types.double
+
+    if ltype is types.float or rtype is types.float:
+        return types.float
+
+    if ltype is types.int64 or rtype is types.int64:
+        return types.int64
+
+    return int32
+
+
+def value_to_ir_value(value):
+    """
+    If value is already an IR value just return it. If it's a Python value then
+    convert to an IR constant and return it.
+    """
+    if isinstance(value, ir.Value):
+        return value
+
+    ir_type = value_to_ir_type(value)
+    return ir.Constant(ir_type, value)
+
+
+
+def get_c_type(ir_type):
+    types_ir2c = {
+        types.float: ctypes.c_float,
+        types.double: ctypes.c_double,
+        types.int32: ctypes.c_int32,
+        types.int64: ctypes.c_int64,
+    }
+
+    return types_ir2c[ir_type]
+
+
+#
+# AST
+#
 
 LEAFS = {
     ast.Name, ast.Num,
@@ -239,7 +337,9 @@ class NodeVisitor(BaseNodeVisitor):
     def lookup(self, name):
         if name in self.locals:
             return self.locals[name]
-        return self.root.globals[name]
+        if name in self.root.globals:
+            return self.root.globals[name]
+        return getattr(builtins, name)
 
     def Module_enter(self, node, parent):
         self.root = node
@@ -261,7 +361,7 @@ class BlockVisitor(NodeVisitor):
         Module(stmt* body)
         """
         super().Module_enter(node, parent)
-        node.globals = {'float': float, 'int': int}
+        node.globals = globals()
 
         # This will be the final output of the whole process
         node.module = ir.Module()
@@ -276,7 +376,7 @@ class BlockVisitor(NodeVisitor):
         if ctx is ast.Load:
             try:
                 return self.lookup(name)
-            except KeyError:
+            except AttributeError:
                 pass
 
         return None
@@ -317,6 +417,7 @@ class BlockVisitor(NodeVisitor):
         return args
 
     def FunctionDef_args(self, node, parent, args):
+        args = [(name, type_to_ir_type(type_)) for name, type_ in args]
         self.f_args = args
 
     def FunctionDef_returns(self, node, parent, returns):
@@ -329,8 +430,9 @@ class BlockVisitor(NodeVisitor):
         f_args = self.f_args
 
         # Create the function type
-        args = tuple(type_py2ir[py_type] for name, py_type in f_args)
-        function_type = ir.FunctionType(type_py2ir[returns], args)
+        args = tuple(type_to_ir_type(arg_type) for name, arg_type in f_args)
+        returns = type_to_ir_type(returns)
+        function_type = ir.FunctionType(returns, args)
 
         # Create the function
         function = ir.Function(root.module, function_type, f_name)
@@ -367,7 +469,7 @@ class BlockVisitor(NodeVisitor):
 
         # Keep the ctypes signature, used in the tests
         c_args = [returns] + [py_type for name, py_type in f_args]
-        c_args = [type_py2c[t] for t in c_args]
+        c_args = [get_c_type(t) for t in c_args]
         root.c_functypes[f_name] = ctypes.CFUNCTYPE(*c_args)
 
     def If_test(self, node, parent, test):
@@ -417,72 +519,29 @@ class GenVisitor(NodeVisitor):
         for name, field in ast.iter_fields(node):
             self.print(f'- {name} {field}')
 
-    def __get_type(self, value):
+    def convert(self, value, type_):
         """
-        Return the type of value, only int and float are supported.
-        The value may be a Python or an IR value.
+        Return the value converted to the given type.
         """
-        if isinstance(value, ir.Value):
-            vtype = {
-                ir.IntType: int,
-                ir.DoubleType: float,
-                ir.ArrayType: list,
-            }.get(value.type.__class__)
-        else:
-            vtype = type(value)
+        # If Python value, return a constant
+        if not isinstance(value, ir.Value):
+            return ir.Constant(type_, value)
 
-        if vtype in (int, float, list):
-            return vtype
-
-        raise NotImplementedError(
-            f'only int and float supported, got {repr(value)}'
-        )
-
-    def __get_lr_type(self, left, right):
-        """
-        For coercion purposes, return int if both are int, float if one is
-        float.
-        """
-        ltype = self.__get_type(left)
-        rtype = self.__get_type(right)
-        if ltype is int and rtype is int:
-            return int
-        return float
-
-    def __py2ir(self, value, dst_type=None):
-        is_ir_value = isinstance(value, ir.Value)
-        if dst_type is None and is_ir_value:
+        if value.type is type_:
             return value
 
-        src_type = self.__get_type(value)
+        conversions = {
+            (ir.IntType, ir.FloatType): self.builder.sitofp,
+            (ir.FloatType, ir.IntType): self.builder.fptosi,
+            (ir.IntType, ir.DoubleType): self.builder.sitofp,
+            (ir.DoubleType, ir.IntType): self.builder.fptosi,
+        }
+        conversion = conversions.get((type(value.type), type(type_)))
+        if conversion is None:
+            err = f'Conversion from {value.type} to {type_} not suppoerted'
+            raise NotImplementedError(err)
 
-        # If target type is not given, will be same as source type
-        if dst_type is None:
-            dst_type = src_type
-
-        # Target type, in IR
-        dst_type_ir = type_py2ir[dst_type]
-
-        # If Python value, return a constant
-        if not is_ir_value:
-            if src_type is not dst_type:
-                value = dst_type(value)
-
-            return ir.Constant(dst_type_ir, value)
-
-        # Coerce
-        if dst_type is not src_type:
-            conversion = {
-                (int, float): self.builder.sitofp,
-                (float, int): self.builder.fptosi,
-            }.get((src_type, dst_type))
-            if conversion is None:
-                err = f'Conversion from {src_type} to {dst_type} not suppoerted'
-                raise NotImplementedError(err)
-
-            value = conversion(value, dst_type_ir)
-
-        return value
+        return conversion(value, type_)
 
     #
     # Leaf nodes
@@ -559,7 +618,7 @@ class GenVisitor(NodeVisitor):
         else:
             raise TypeError('all list elements must be of the same type')
 
-        el_type = type_py2ir[py_type]
+        el_type = type_to_ir_type(py_type)
         typ = ir.ArrayType(el_type, len(elts))
         return ir.Constant(typ, elts)
 
@@ -578,8 +637,10 @@ class GenVisitor(NodeVisitor):
         node.builder.branch(node.block_start)
 
     def BinOp_exit(self, node, parent, left, op, right):
+        type_ = values_to_type(left, right)
+
         # Two Python values
-        if not isinstance(left, ir.Value) and not isinstance(right, ir.Value):
+        if not isinstance(type_, ir.Type):
             ast2op = {
                 ast.Add: operator.add,
                 ast.Sub: operator.sub,
@@ -589,28 +650,32 @@ class GenVisitor(NodeVisitor):
             py_op = ast2op.get(op)
             if py_op is None:
                 raise NotImplementedError(
-                    f'{op.__name__} operator for {self.ltype} type not implemented')
+                    f'{op.__name__} operator for {type_} type not implemented')
             return py_op(left, right)
 
         # One or more IR values
-        py_type = self.__get_lr_type(left, right)
-        left = self.__py2ir(left, py_type)
-        right = self.__py2ir(right, py_type)
+        left = self.convert(left, type_)
+        right = self.convert(right, type_)
 
         d = {
-            (ast.Add,  int  ): self.builder.add,
-            (ast.Sub,  int  ): self.builder.sub,
-            (ast.Mult, int  ): self.builder.mul,
-            (ast.Div,  int  ): self.builder.sdiv,
-            (ast.Add,  float): self.builder.fadd,
-            (ast.Sub,  float): self.builder.fsub,
-            (ast.Mult, float): self.builder.fmul,
-            (ast.Div,  float): self.builder.fdiv,
+            (ast.Add,  ir.IntType): self.builder.add,
+            (ast.Sub,  ir.IntType): self.builder.sub,
+            (ast.Mult, ir.IntType): self.builder.mul,
+            (ast.Div,  ir.IntType): self.builder.sdiv,
+            (ast.Add,  ir.FloatType): self.builder.fadd,
+            (ast.Sub,  ir.FloatType): self.builder.fsub,
+            (ast.Mult, ir.FloatType): self.builder.fmul,
+            (ast.Div,  ir.FloatType): self.builder.fdiv,
+            (ast.Add,  ir.DoubleType): self.builder.fadd,
+            (ast.Sub,  ir.DoubleType): self.builder.fsub,
+            (ast.Mult, ir.DoubleType): self.builder.fmul,
+            (ast.Div,  ir.DoubleType): self.builder.fdiv,
         }
-        ir_op = d.get((op, py_type))
+        base_type = type(type_)
+        ir_op = d.get((op, base_type))
         if ir_op is None:
             raise NotImplementedError(
-                f'{op.__name__} operator for {self.ltype} type not implemented')
+                f'{op.__name__} operator for {type_} type not implemented')
 
         return ir_op(left, right)
 
@@ -623,8 +688,10 @@ class GenVisitor(NodeVisitor):
         op = ops[0]
         right = comparators[0]
 
+        type_ = values_to_type(left, right)
+
         # Two Python values
-        if not isinstance(left, ir.Value) and not isinstance(right, ir.Value):
+        if not isinstance(type_, ir.Type):
             ast2op = {
                 '==': operator.eq,
                 '!=': operator.ne,
@@ -636,16 +703,17 @@ class GenVisitor(NodeVisitor):
             py_op = ast2op.get(op)
             return py_op(left, right)
 
-        # One or more IR values
-        py_type = self.__get_lr_type(left, right)
-        left = self.__py2ir(left, py_type)
-        right = self.__py2ir(right, py_type)
+        # At least 1 IR value
+        left = self.convert(left, type_)
+        right = self.convert(right, type_)
 
         d = {
-            int: self.builder.icmp_signed,
-            float: self.builder.fcmp_unordered, # XXX fcmp_ordered
+            ir.IntType: self.builder.icmp_signed,
+            ir.FloatType: self.builder.fcmp_unordered, # XXX fcmp_ordered
+            ir.DoubleType: self.builder.fcmp_unordered, # XXX fcmp_ordered
         }
-        ir_op = d.get(py_type)
+        base_type = type(type_)
+        ir_op = d.get(base_type)
         return ir_op(op, left, right)
 
     def BoolOp_exit(self, node, parent, op, values):
@@ -709,29 +777,29 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(i64, name='i')     # i
-        self.builder.store(zero, node.i)                # i = 0
-        arr = self.builder.alloca(expr.type)            # arr
-        self.builder.store(expr, arr)                   # arr = expr
-        n = ir.Constant(i64, expr.type.count)           # n = len(expr)
-        self.builder.branch(node.block_for)             # br %for
+        node.i = self.builder.alloca(types.int64, name='i') # i
+        self.builder.store(zero, node.i)                    # i = 0
+        arr = self.builder.alloca(expr.type)                # arr
+        self.builder.store(expr, arr)                       # arr = expr
+        n = ir.Constant(types.int64, expr.type.count)       # n = len(expr)
+        self.builder.branch(node.block_for)                 # br %for
 
-        self.builder.position_at_end(node.block_for)    # %for
-        idx = self.builder.load(node.i)                 # %idx = i
-        test = self.builder.icmp_unsigned('<', idx, n)  # %idx < n
+        self.builder.position_at_end(node.block_for)         # %for
+        idx = self.builder.load(node.i)                      # %idx = i
+        test = self.builder.icmp_unsigned('<', idx, n)       # %idx < n
         self.builder.cbranch(test, node.block_body, node.block_next) # br %test %body %next
 
-        self.builder.position_at_end(node.block_body)   # %body
-        ptr = self.builder.gep(arr, [zero, idx])        # expr[idx]
-        x = self.builder.load(ptr)                      # % = expr[i]
+        self.builder.position_at_end(node.block_body)        # %body
+        ptr = self.builder.gep(arr, [zero, idx])             # expr[idx]
+        x = self.builder.load(ptr)                           # % = expr[i]
         self.locals[node.target.id] = x
 
     def For_exit(self, node, parent, *args):
-        a = self.builder.load(node.i)                   # % = i
-        b = self.builder.add(a, one)                    # % = % + 1
-        self.builder.store(b, node.i)                   # i = %
-        self.builder.branch(node.block_for)             # br %for
-        self.builder.position_at_end(node.block_next)   # %next
+        a = self.builder.load(node.i)                        # % = i
+        b = self.builder.add(a, one)                         # % = % + 1
+        self.builder.store(b, node.i)                        # i = %
+        self.builder.branch(node.block_for)                  # br %for
+        self.builder.position_at_end(node.block_next)        # %next
 
     #
     # Other non-leaf nodes
@@ -745,9 +813,22 @@ class GenVisitor(NodeVisitor):
         """
         assert value is not None
         assert simple == 1
-        # LLVM does not support simple assignment to local variables.
-        self.locals[target] = value
+
+        ltype = type_to_ir_type(self.ltype)
+        value = self.convert(value, ltype)
         self.ltype = None
+
+        name = target
+        try:
+            ptr = self.lookup(name)
+        except AttributeError:
+            block_cur = self.builder.block
+            self.builder.position_at_end(self.block_vars)
+            ptr = self.builder.alloca(value.type, name=name)
+            self.builder.position_at_end(block_cur)
+            self.locals[name] = ptr
+
+        return self.builder.store(value, ptr)
 
     def Assign_enter(self, node, parent):
         """
@@ -759,11 +840,11 @@ class GenVisitor(NodeVisitor):
 
     def Assign_exit(self, node, parent, name, value):
         name = name[0]
-        value = self.__py2ir(value)
+        value = value_to_ir_value(value)
 
         try:
             ptr = self.lookup(name)
-        except KeyError:
+        except AttributeError:
             block_cur = self.builder.block
             self.builder.position_at_end(self.block_vars)
             ptr = self.builder.alloca(value.type, name=name)
@@ -779,8 +860,7 @@ class GenVisitor(NodeVisitor):
         """
         Return(expr? value)
         """
-        value = self.__py2ir(value, self.f_rtype)
-
+        value = self.convert(value, self.f_rtype)
         self.ltype = None
         return self.builder.ret(value)
 
@@ -863,8 +943,8 @@ class LLVM:
         self.py_source = []
         self.__ir = []
 
-    def __call__(self, py_source, debug=False):
-        if type(py_source) is types.FunctionType:
+    def compile(self, py_source, debug=False):
+        if type(py_source) is FunctionType:
             py_function = py_source
             py_source = inspect.getsource(py_function) # Python source code
             ir, csigs = py2llvm(self.engine, py_source, debug=debug)
@@ -927,3 +1007,17 @@ binding.initialize_native_target()
 binding.initialize_native_asmprinter()  # yes, even this one
 
 llvm = LLVM()
+
+
+#
+# Public interface
+#
+
+compile = llvm.compile
+
+float = types.float
+double = types.double
+int32 = types.int32
+int64 = types.int64
+
+__all__ = ['compile', 'float', 'double', 'int32', 'int64']

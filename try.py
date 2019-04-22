@@ -1,23 +1,14 @@
 import argparse
+import inspect
 
-from py2llvm import llvm
+import py2llvm as llvm
 
-
-def f() -> int:
+double = llvm.double
+def f() -> double:
     acc = 0
     for x in [1, 2, 3, 4, 5]:
         acc = acc + x
     return acc
-
-
-source = """
-def g() -> int:
-    acc = 0
-    for x in [1, 2, 3, 4, 5]:
-        acc = acc + x
-    return acc
-"""
-
 
 
 if __name__ == '__main__':
@@ -26,19 +17,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     debug = args.debug
 
-#   print('====== Source ======')
-#   llvm(source, debug=debug)
-#   g = llvm['g']
-#   print(source)
-#   print('====== IR ======')
-#   print(llvm.ir)
-#   print('====== Output ======')
-#   g(debug=True)
-
     print('====== Source ======')
-    f = llvm(f, debug=debug)
-    print(f.py_source)
+    print(inspect.getsource(f))
+    f = llvm.compile(f, debug=debug)
     print('====== IR ======')
     print(f.ir)
     print('====== Output ======')
-    f(debug=True)
+    f(3, debug=True)
