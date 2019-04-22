@@ -80,7 +80,7 @@ import builtins
 import ctypes
 import inspect
 import operator
-from types import FunctionType
+import types
 
 from llvmlite import ir
 from llvmlite import binding
@@ -89,15 +89,14 @@ from llvmlite import binding
 # Types and constants
 #
 
-class types:
-    float = ir.FloatType()
-    double = ir.DoubleType()
-    int32 = ir.IntType(32)
-    int64 = ir.IntType(64)
+float32 = ir.FloatType()
+float64 = ir.DoubleType()
+int32 = ir.IntType(32)
+int64 = ir.IntType(64)
 
 
-zero = ir.Constant(types.int64, 0)
-one = ir.Constant(types.int64, 1)
+zero = ir.Constant(int64, 0)
+one = ir.Constant(int64, 1)
 
 
 def value_to_type(value):
@@ -114,10 +113,7 @@ def type_to_ir_type(type_):
     if isinstance(type_, ir.Type):
         return type_
 
-    return {
-        float: types.double,
-        int: types.int64,
-    }[type_]
+    return {float: float64, int: int64}[type_]
 
 
 def value_to_ir_type(value):
@@ -149,14 +145,14 @@ def values_to_type(left, right):
     ltype = type_to_ir_type(ltype)
     rtype = type_to_ir_type(ltype)
 
-    if ltype is types.double or rtype is types.double:
-        return types.double
+    if ltype is float64 or rtype is float64:
+        return float64
 
-    if ltype is types.float or rtype is types.float:
-        return types.float
+    if ltype is float32 or rtype is float32:
+        return float32
 
-    if ltype is types.int64 or rtype is types.int64:
-        return types.int64
+    if ltype is int64 or rtype is int64:
+        return int64
 
     return int32
 
@@ -176,10 +172,10 @@ def value_to_ir_value(value):
 
 def get_c_type(ir_type):
     types_ir2c = {
-        types.float: ctypes.c_float,
-        types.double: ctypes.c_double,
-        types.int32: ctypes.c_int32,
-        types.int64: ctypes.c_int64,
+        float32: ctypes.c_float,
+        float64: ctypes.c_double,
+        int32: ctypes.c_int32,
+        int64: ctypes.c_int64,
     }
 
     return types_ir2c[ir_type]
@@ -363,10 +359,6 @@ class BlockVisitor(NodeVisitor):
         super().Module_enter(node, parent)
         node.globals = globals()
 
-        # This will be the final output of the whole process
-        node.module = ir.Module()
-        node.c_functypes = {} # Signatures for ctypes
-
     def Name_visit(self, node, parent):
         """
         Name(identifier id, expr_context ctx)
@@ -403,23 +395,6 @@ class BlockVisitor(NodeVisitor):
         if any([node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
             raise NotImplementedError('only positional arguments are supported')
 
-    def arg_enter(self, node, parent):
-        """
-        arg = (identifier arg, expr? annotation)
-               attributes (int lineno, int col_offset)
-        """
-        assert node.annotation is not None, 'function arguments must have a type hint'
-
-    def arg_exit(self, node, parent, arg, annotation):
-        return arg, annotation
-
-    def arguments_exit(self, node, parent, args, vararg, kwonlyargs, kw_defaults, kwarg, defaults):
-        return args
-
-    def FunctionDef_args(self, node, parent, args):
-        args = [(name, type_to_ir_type(type_)) for name, type_ in args]
-        self.f_args = args
-
     def FunctionDef_returns(self, node, parent, returns):
         """
         When we reach this point we have all the function signature: arguments
@@ -427,15 +402,10 @@ class BlockVisitor(NodeVisitor):
         """
         root = self.root
         f_name = node.name
-        f_args = self.f_args
-
-        # Create the function type
-        args = tuple(type_to_ir_type(arg_type) for name, arg_type in f_args)
-        returns = type_to_ir_type(returns)
-        function_type = ir.FunctionType(returns, args)
+        f_args = root.f_args
 
         # Create the function
-        function = ir.Function(root.module, function_type, f_name)
+        function = root.ir_function
         self.root.globals[f_name] = function
 
         # Create the first block of the function, and the associated builder.
@@ -465,12 +435,7 @@ class BlockVisitor(NodeVisitor):
         node.block_vars = block_vars
         node.block_start = block_start
         node.builder = builder
-        node.f_rtype = returns
-
-        # Keep the ctypes signature, used in the tests
-        c_args = [returns] + [py_type for name, py_type in f_args]
-        c_args = [get_c_type(t) for t in c_args]
-        root.c_functypes[f_name] = ctypes.CFUNCTYPE(*c_args)
+        node.f_rtype = root.f_returns
 
     def If_test(self, node, parent, test):
         """
@@ -777,11 +742,11 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(types.int64, name='i') # i
+        node.i = self.builder.alloca(int64, name='i') # i
         self.builder.store(zero, node.i)                    # i = 0
         arr = self.builder.alloca(expr.type)                # arr
         self.builder.store(expr, arr)                       # arr = expr
-        n = ir.Constant(types.int64, expr.type.count)       # n = len(expr)
+        n = ir.Constant(int64, expr.type.count)       # n = len(expr)
         self.builder.branch(node.block_for)                 # br %for
 
         self.builder.position_at_end(node.block_for)         # %for
@@ -872,30 +837,6 @@ class GenVisitor(NodeVisitor):
         return self.builder.call(func, args)
 
 
-def py2llvm(engine, source, debug):
-    assert type(source) is str
-
-    # Source to AST tree
-    node = ast.parse(source)
-
-    # 1st pass: structure
-    if debug:
-        print('====== Debug: 1st pass ======')
-    BlockVisitor(debug).traverse(node)
-
-    # 2nd pass: generate
-    if debug:
-        print('====== Debug: 2nd pass ======')
-    GenVisitor(debug).traverse(node)
-
-    # Compile
-    ir = str(node.module)
-    llvm.compile_ir(engine, ir)
-
-    # Output
-    return ir, node.c_functypes
-
-
 class LLVMFunction:
     """
     Wraps a Python function. Compiled to IR, it can be executed with ctypes:
@@ -912,11 +853,10 @@ class LLVMFunction:
     c_function  -- the C function (only this one is needed to make the call)
     """
 
-    def __init__(self, engine, name, c_signature,
+    def __init__(self, c_signature, func_ptr, name,
                  py_function=None, py_source=None, ir=None):
 
         # Get the function
-        func_ptr = engine.get_function_address(name)
         self.c_function = c_signature(func_ptr)
 
         # Keep stuff for introspection
@@ -938,39 +878,55 @@ class LLVMFunction:
 class LLVM:
 
     def __init__(self):
-        self.functions = {}
         self.engine = self.create_execution_engine()
-        self.py_source = []
-        self.__ir = []
 
-    def compile(self, py_source, debug=False):
-        if type(py_source) is FunctionType:
-            py_function = py_source
-            py_source = inspect.getsource(py_function) # Python source code
-            ir, csigs = py2llvm(self.engine, py_source, debug=debug)
-            self.__ir.append(ir)
+    def compile(self, py_function, debug=False):
+        assert type(py_function) is types.FunctionType
 
-            name = py_function.__name__
-            f = LLVMFunction(self.engine, name, csigs[name],
-                             py_function, py_source, ir)
-            self.functions[name] = f
-            return f
-        elif type(py_source) is str:
-            ir, csigs = py2llvm(self.engine, py_source, debug=debug)
-            self.__ir.append(ir)
+        # This will be the final output of the whole process
+        ir_module = ir.Module()
 
-            for name, c_signature in csigs.items():
-                f =  LLVMFunction(self.engine, name, c_signature)
-                self.functions[f.name] = f
-        else:
-            raise TypeError(f'Unexpected {type(py_source)} type')
+        # The IR signature
+        signature = inspect.signature(py_function)
+        returns = type_to_ir_type(signature.return_annotation)
+        params = signature.parameters
+        params = [
+            (name, type_to_ir_type(params[name].annotation))
+            for name in params
+        ]
 
-    def __getitem__(self, name):
-        return self.functions[name]
+        f_type = ir.FunctionType(returns, tuple(type_ for name, type_ in params))
+        f_name = py_function.__name__
+        ir_function = ir.Function(ir_module, f_type, f_name)
 
-    @property
-    def ir(self):
-        return '\n'.join(self.__ir)
+        # The ctypes function signature is needed to call the compiled function
+        c_args = [returns] + [py_type for name, py_type in params]
+        c_args = [get_c_type(t) for t in c_args]
+        cfunctype = ctypes.CFUNCTYPE(*c_args)
+
+        # Python AST
+        py_source = inspect.getsource(py_function)
+        node = ast.parse(py_source)
+        node.ir_function = ir_function
+        node.f_args = params
+        node.f_returns = returns
+
+        # AST 1st pass: structure
+        if debug: print('====== Debug: 1st pass ======')
+        BlockVisitor(debug).traverse(node)
+
+        # AST 2nd pass: generate
+        if debug: print('====== Debug: 2nd pass ======')
+        GenVisitor(debug).traverse(node)
+
+        # IR code
+        ir_source = str(ir_module)
+        self.compile_ir(ir_source) # Compile
+
+        # Return the function wrapper
+        func_ptr = self.engine.get_function_address(f_name)
+        return LLVMFunction(cfunctype, func_ptr, f_name, py_function,
+                            py_source, ir_source)
 
     def create_execution_engine(self):
         """
@@ -986,11 +942,13 @@ class LLVM:
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
         return engine
 
-    def compile_ir(self, engine, llvm_ir):
+    def compile_ir(self, llvm_ir):
         """
         Compile the LLVM IR string with the given engine.
         The compiled module object is returned.
         """
+        engine = self.engine
+
         # Create a LLVM module object from the IR
         mod = binding.parse_assembly(llvm_ir)
         mod.verify()
@@ -1015,9 +973,4 @@ llvm = LLVM()
 
 compile = llvm.compile
 
-float = types.float
-double = types.double
-int32 = types.int32
-int64 = types.int64
-
-__all__ = ['compile', 'float', 'double', 'int32', 'int64']
+__all__ = ['compile', 'float32', 'float64', 'int32', 'int64']

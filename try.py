@@ -3,13 +3,12 @@ import inspect
 
 import py2llvm as llvm
 
-double = llvm.double
-def f() -> double:
+
+def f(a: int) -> llvm.float32:
     acc = 0
     for x in [1, 2, 3, 4, 5]:
         acc = acc + x
     return acc
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
