@@ -94,6 +94,8 @@ float64 = ir.DoubleType()
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
+int32p = int32.as_pointer()
+
 
 zero = ir.Constant(int64, 0)
 one = ir.Constant(int64, 1)
@@ -460,6 +462,17 @@ class BlockVisitor(NodeVisitor):
     def For_exit(self, node, parent, *args):
         node.block_next = self.function.append_basic_block('for_out')
 
+    def While_enter(self, node, parent):
+        """
+        While(expr test, stmt* body, stmt* orelse)
+        """
+        assert not node.orelse, '"while ... else .." not supported'
+        node.block_while = self.function.append_basic_block('while')
+        node.block_body = self.function.append_basic_block('while_body')
+
+    def While_exit(self, node, parent, *args):
+        node.block_next = self.function.append_basic_block('while_out')
+
 
 class GenVisitor(NodeVisitor):
     """
@@ -708,14 +721,15 @@ class GenVisitor(NodeVisitor):
         """
         Index(expr value)
         """
-        assert type(value) is int
+        type_ = value_to_ir_type(value)
+        assert isinstance(type_, ir.IntType)
         return value
 
     def Subscript_exit(self, node, parent, value, slice, ctx):
         """
         Subscript(expr value, slice slice, expr_context ctx)
         """
-        idx = self.__py2ir(slice)
+        idx = value_to_ir_value(slice)
         ptr = self.builder.gep(value, [zero, idx])
         return self.builder.load(ptr)
 
@@ -742,11 +756,11 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(int64, name='i') # i
+        node.i = self.builder.alloca(int64, name='i')       # i
         self.builder.store(zero, node.i)                    # i = 0
         arr = self.builder.alloca(expr.type)                # arr
         self.builder.store(expr, arr)                       # arr = expr
-        n = ir.Constant(int64, expr.type.count)       # n = len(expr)
+        n = ir.Constant(int64, expr.type.count)             # n = len(expr)
         self.builder.branch(node.block_for)                 # br %for
 
         self.builder.position_at_end(node.block_for)         # %for
@@ -765,6 +779,20 @@ class GenVisitor(NodeVisitor):
         self.builder.store(b, node.i)                        # i = %
         self.builder.branch(node.block_for)                  # br %for
         self.builder.position_at_end(node.block_next)        # %next
+    #
+    # while ...
+    #
+    def While_enter(self, node, parent):
+        self.builder.branch(node.block_while)
+        self.builder.position_at_end(node.block_while)
+
+    def While_test(self, node, parent, test):
+        self.builder.cbranch(test, node.block_body, node.block_next)
+        self.builder.position_at_end(node.block_body)
+
+    def While_exit(self, node, parent, *args):
+        self.builder.branch(node.block_while)
+        self.builder.position_at_end(node.block_next)
 
     #
     # Other non-leaf nodes
@@ -880,7 +908,7 @@ class LLVM:
     def __init__(self):
         self.engine = self.create_execution_engine()
 
-    def compile(self, py_function, debug=False):
+    def compile(self, py_function, verbose=0):
         assert type(py_function) is types.FunctionType
 
         # This will be the final output of the whole process
@@ -906,12 +934,17 @@ class LLVM:
 
         # Python AST
         py_source = inspect.getsource(py_function)
+        if verbose:
+            print('====== Source ======')
+            print(py_source)
+
         node = ast.parse(py_source)
         node.ir_function = ir_function
         node.f_args = params
         node.f_returns = returns
 
         # AST 1st pass: structure
+        debug = verbose > 1
         if debug: print('====== Debug: 1st pass ======')
         BlockVisitor(debug).traverse(node)
 
@@ -921,6 +954,9 @@ class LLVM:
 
         # IR code
         ir_source = str(ir_module)
+        if verbose:
+            print('====== IR ======')
+            print(ir_source)
         self.compile_ir(ir_source) # Compile
 
         # Return the function wrapper
