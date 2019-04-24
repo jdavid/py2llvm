@@ -1,11 +1,10 @@
 import argparse
+from typing import List
 
 import py2llvm as llvm
 
 
-def f(n: int) -> int:
-    a = [4, 2, 5] # Next: make this one a parameter
-
+def f(n: int, a: List[int]) -> int:
     acc = 0
     i = 0
     while i < n:
@@ -21,5 +20,6 @@ if __name__ == '__main__':
     verbose = 2 if args.debug else 1
 
     f = llvm.compile(f, verbose=verbose)
+
     print('====== Output ======')
-    f(3, debug=True)
+    f(3, [1, 2, 4], debug=True)

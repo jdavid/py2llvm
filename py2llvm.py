@@ -81,6 +81,7 @@ import ctypes
 import inspect
 import operator
 import types
+import typing
 
 from llvmlite import ir
 from llvmlite import binding
@@ -95,6 +96,7 @@ int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
 int32p = int32.as_pointer()
+int64p = int32.as_pointer()
 
 
 zero = ir.Constant(int64, 0)
@@ -115,7 +117,17 @@ def type_to_ir_type(type_):
     if isinstance(type_, ir.Type):
         return type_
 
-    return {float: float64, int: int64}[type_]
+    # Basic types
+    basic_types = {float: float64, int: int64}
+    ir_type = basic_types.get(type_)
+    if ir_type is not None:
+        return ir_type
+
+    # Only List[int] and List[float] are supported
+    assert type_.__origin__ is typing.List
+    item_type = type_.__args__[0]
+    item_type = basic_types[item_type]
+    return item_type.as_pointer()
 
 
 def value_to_ir_type(value):
@@ -173,14 +185,19 @@ def value_to_ir_value(value):
 
 
 def get_c_type(ir_type):
-    types_ir2c = {
+    basic_types = {
         float32: ctypes.c_float,
         float64: ctypes.c_double,
         int32: ctypes.c_int32,
         int64: ctypes.c_int64,
     }
 
-    return types_ir2c[ir_type]
+    c_type = basic_types.get(ir_type)
+    if c_type is not None:
+        return c_type
+
+    assert ir_type.is_pointer
+    return ctypes.POINTER(basic_types[ir_type.pointee])
 
 
 #
@@ -199,6 +216,8 @@ LEAFS = {
     # cmpop
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot,
     ast.In, ast.NotIn,
+    # expr_context
+    ast.Load, ast.Store, ast.Del, ast.AugLoad, ast.AugStore, ast.Param,
 }
 
 class BaseNodeVisitor:
@@ -266,7 +285,10 @@ class BaseNodeVisitor:
             return self.callback('visit', node, parent)
 
         # Enter
-        self.callback('enter', node, parent)
+        # enter callback return False to skip traversing the subtree
+        if self.callback('enter', node, parent) is False:
+            return None
+
         self.depth += 1
 
         # Traverse
@@ -299,33 +321,37 @@ class BaseNodeVisitor:
         # Debug
         if self.debug:
             name = node.__class__.__name__
+            line = None
             if event == 'enter':
+                line = f'<{name}>'
                 if node._fields:
                     attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
-                    print(self.depth * ' '  + f'<{name} {attrs}>')
-                else:
-                    print(self.depth * ' '  + f'<{name}>')
+                    line = f'<{name} {attrs}>'
+
+                if value is False:
+                    line += ' SKIP'
             elif event == 'exit':
-                print(self.depth * ' '  + f'</{name}> -> {value}')
+                line = f'</{name}> -> {value}'
 #               if args:
 #                   attrs = ' '.join(repr(x) for x in args)
-#                   print(self.depth * ' '  + f'</{name} {attrs}>')
+#                   line = f'</{name} {attrs}>'
 #               else:
-#                   print(self.depth * ' '  + f'</{name}>')
+#                   line = f'</{name}>'
             elif event == 'visit':
                 if node._fields:
                     attrs = ' '.join(f'{k}' for k, v in ast.iter_fields(node))
-                    print(self.depth * ' '  + f'<{name} {attrs} />', end='')
+                    line = f'<{name} {attrs} />'
                 else:
-                    print(self.depth * ' '  + f'<{name} />', end='')
-                if cb is None:
-                    print()
-                else:
-                    print(f' -> {value}')
+                    line = f'<{name} />'
+                if cb is not None:
+                    line += f' -> {value}'
             else:
                 if cb is not None:
                     attrs = ' '.join([repr(x) for x in args])
-                    print(self.depth * ' '  + f'_{event}({attrs})')
+                    line = f'_{event}({attrs})'
+
+            if line:
+                print(self.depth * ' ' + line)
 
         return value
 
@@ -340,7 +366,18 @@ class NodeVisitor(BaseNodeVisitor):
         return getattr(builtins, name)
 
     def Module_enter(self, node, parent):
+        """
+        Module(stmt* body)
+        """
         self.root = node
+
+    def arguments_enter(self, node, parent):
+        """
+        arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
+                     arg? kwarg, expr* defaults)
+        """
+        # We don't parse arguments because arguments are handled in compile
+        return False
 
 
 class BlockVisitor(NodeVisitor):
@@ -353,13 +390,6 @@ class BlockVisitor(NodeVisitor):
 
     In general we should do here as much as we can.
     """
-
-    def Module_enter(self, node, parent):
-        """
-        Module(stmt* body)
-        """
-        super().Module_enter(node, parent)
-        node.globals = globals()
 
     def Name_visit(self, node, parent):
         """
@@ -388,14 +418,6 @@ class BlockVisitor(NodeVisitor):
         # Initialize function context
         node.locals = {}
         self.locals = node.locals
-
-    def arguments_enter(self, node, parent):
-        """
-        arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
-                     arg? kwarg, expr* defaults)
-        """
-        if any([node.vararg, node.kwonlyargs, node.kw_defaults, node.kwarg, node.defaults]):
-            raise NotImplementedError('only positional arguments are supported')
 
     def FunctionDef_returns(self, node, parent, returns):
         """
@@ -576,9 +598,6 @@ class GenVisitor(NodeVisitor):
     def GtE_visit(self, node, parent):
         return '>='
 
-    def object_visit(self, node, parent):
-        raise NotImplementedError(f'{node.__class__} not supported')
-
     #
     # Literals
     #
@@ -721,8 +740,6 @@ class GenVisitor(NodeVisitor):
         """
         Index(expr value)
         """
-        type_ = value_to_ir_type(value)
-        assert isinstance(type_, ir.IntType)
         return value
 
     def Subscript_exit(self, node, parent, value, slice, ctx):
@@ -730,7 +747,12 @@ class GenVisitor(NodeVisitor):
         Subscript(expr value, slice slice, expr_context ctx)
         """
         idx = value_to_ir_value(slice)
-        ptr = self.builder.gep(value, [zero, idx])
+        assert value.type.is_pointer
+        pointee = value.type.pointee
+        if isinstance(pointee, ir.ArrayType):
+            ptr = self.builder.gep(value, [zero, idx])
+        else:
+            ptr = self.builder.gep(value, [idx])
         return self.builder.load(ptr)
 
     #
@@ -877,18 +899,19 @@ class LLVMFunction:
     py_function -- the original Python function
     py_source   -- the source code of the Python function
     ir          -- LLVM's IR code
-    c_signature -- the C signature, used when calling
-    c_function  -- the C function (only this one is needed to make the call)
+    cfunctype   -- the C signature, used when calling
+    cfunction   -- the C function (only this one is needed to make the call)
     """
 
-    def __init__(self, c_signature, func_ptr, name,
+    def __init__(self, c_args, func_ptr, name,
                  py_function=None, py_source=None, ir=None):
 
         # Get the function
-        self.c_function = c_signature(func_ptr)
+        self.c_args = c_args
+        self.cfunctype = ctypes.CFUNCTYPE(*c_args)
+        self.cfunction = self.cfunctype(func_ptr)
 
         # Keep stuff for introspection
-        self.c_signature = c_signature
         self.name = name
         # Optional stuff
         self.py_function = py_function
@@ -896,7 +919,14 @@ class LLVMFunction:
         self.ir = ir
 
     def __call__(self, *args, debug=False):
-        value = self.c_function(*args)
+        c_args = []
+        for i, arg in enumerate(args):
+            if type(arg) is list:
+                c_arg = self.c_args[i+1]
+                arg = (c_arg._type_ * len(arg))(*arg)
+            c_args.append(arg)
+
+        value = self.cfunction(*c_args)
         if debug:
             print(f'{args} => {value}')
 
@@ -911,16 +941,22 @@ class LLVM:
     def compile(self, py_function, verbose=0):
         assert type(py_function) is types.FunctionType
 
+        # We only support positional arguments
+        signature = inspect.signature(py_function)
+        params = signature.parameters
+        params = [params[x] for x in params]
+        for param in params:
+            if param.kind > inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                raise NotImplementedError('only positional arguments are supported')
+
         # This will be the final output of the whole process
         ir_module = ir.Module()
 
         # The IR signature
-        signature = inspect.signature(py_function)
         returns = type_to_ir_type(signature.return_annotation)
-        params = signature.parameters
         params = [
-            (name, type_to_ir_type(params[name].annotation))
-            for name in params
+            (param.name, type_to_ir_type(param.annotation))
+            for param in params
         ]
 
         f_type = ir.FunctionType(returns, tuple(type_ for name, type_ in params))
@@ -930,7 +966,6 @@ class LLVM:
         # The ctypes function signature is needed to call the compiled function
         c_args = [returns] + [py_type for name, py_type in params]
         c_args = [get_c_type(t) for t in c_args]
-        cfunctype = ctypes.CFUNCTYPE(*c_args)
 
         # Python AST
         py_source = inspect.getsource(py_function)
@@ -939,6 +974,7 @@ class LLVM:
             print(py_source)
 
         node = ast.parse(py_source)
+        node.globals = inspect.stack()[1].frame.f_globals
         node.ir_function = ir_function
         node.f_args = params
         node.f_returns = returns
@@ -961,7 +997,7 @@ class LLVM:
 
         # Return the function wrapper
         func_ptr = self.engine.get_function_address(f_name)
-        return LLVMFunction(cfunctype, func_ptr, f_name, py_function,
+        return LLVMFunction(c_args, func_ptr, f_name, py_function,
                             py_source, ir_source)
 
     def create_execution_engine(self):
