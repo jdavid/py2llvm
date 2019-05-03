@@ -4,8 +4,8 @@ from typing import List
 import py2llvm as llvm
 
 
-def f(n: int, a: List[int]) -> int:
-    acc = 0
+def f(n: int, a: List[llvm.float32]) -> llvm.float32:
+    acc: llvm.float32 = 0.0
     i = 0
     while i < n:
         acc = acc + a[i]
@@ -22,4 +22,4 @@ if __name__ == '__main__':
     f = llvm.compile(f, verbose=verbose)
 
     print('====== Output ======')
-    f(3, [1, 2, 4], debug=True)
+    f(3, [1.0, 2.5, 4.3], debug=True)
