@@ -19,10 +19,6 @@ float64 = ir.DoubleType()
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
-int32p = int32.as_pointer()
-int64p = int32.as_pointer()
-
-
 zero = ir.Constant(int64, 0)
 one = ir.Constant(int64, 1)
 
@@ -338,7 +334,6 @@ class BlockVisitor(NodeVisitor):
         """
         assert type(parent) is ast.Module, 'nested functions not implemented'
         assert not node.decorator_list, 'decorators not implemented'
-        assert node.returns is not None, 'expected type-hint for function return type'
 
         # Initialize function context
         node.locals = {}
@@ -466,10 +461,19 @@ class GenVisitor(NodeVisitor):
             (ir.FloatType, ir.DoubleType): self.builder.fpext,
             (ir.DoubleType, ir.FloatType): self.builder.fptrunc,
         }
-        conversion = conversions.get((type(value.type), type(type_)))
-        if conversion is None:
-            err = f'Conversion from {value.type} to {type_} not suppoerted'
-            raise NotImplementedError(err)
+
+        if isinstance(value.type, ir.IntType) and isinstance(type_, ir.IntType):
+            # Integer to integer
+            if value.type.width < type_.width:
+                conversion = self.builder.zext
+            else:
+                conversion = self.builder.trunc
+        else:
+            # To or from float
+            conversion = conversions.get((type(value.type), type(type_)))
+            if conversion is None:
+                err = f'Conversion from {value.type} to {type_} not suppoerted'
+                raise NotImplementedError(err)
 
         return conversion(value, type_)
 
@@ -878,33 +882,42 @@ class LLVM:
     def __init__(self):
         self.engine = self.create_execution_engine()
 
-    def compile(self, py_function, verbose=0):
+    def compile(self, py_function, signature=None, verbose=0):
         assert type(py_function) is types.FunctionType
 
-        # We only support positional arguments
-        signature = inspect.signature(py_function)
-        params = signature.parameters
-        params = [params[x] for x in params]
-        for param in params:
+        # The signature
+        py_signature = inspect.signature(py_function)
+        if signature is not None:
+            assert len(signature) == len(py_signature.parameters) + 1
+
+        # The name and type of the parameters
+        params = []
+        for i, name in enumerate(py_signature.parameters):
+            param = py_signature.parameters[name]
             if param.kind > inspect.Parameter.POSITIONAL_OR_KEYWORD:
-                raise NotImplementedError('only positional arguments are supported')
+                raise NotImplementedError(
+                    'only positional arguments are supported')
 
-        # This will be the final output of the whole process
+            param_t = param.annotation if signature is None else signature[i]
+            param_t = type_to_ir_type(param_t)
+            params.append((name, param_t))
+
+        # The return type
+        if signature is None:
+            return_t = py_signature.return_annotation
+        else:
+            return_t = signature[-1]
+        return_t = type_to_ir_type(return_t)
+
+        # The IR module
         ir_module = ir.Module()
-
-        # The IR signature
-        returns = type_to_ir_type(signature.return_annotation)
-        params = [
-            (param.name, type_to_ir_type(param.annotation))
-            for param in params
-        ]
-
-        f_type = ir.FunctionType(returns, tuple(type_ for name, type_ in params))
+        # The IR function
+        f_type = ir.FunctionType(return_t, tuple(type_ for name, type_ in params))
         f_name = py_function.__name__
         ir_function = ir.Function(ir_module, f_type, f_name)
 
         # The ctypes function signature is needed to call the compiled function
-        c_args = [returns] + [py_type for name, py_type in params]
+        c_args = [return_t] + [py_type for name, py_type in params]
         c_args = [get_c_type(t) for t in c_args]
 
         # Python AST
@@ -917,7 +930,7 @@ class LLVM:
         node.globals = inspect.stack()[1].frame.f_globals
         node.ir_function = ir_function
         node.f_args = params
-        node.f_returns = returns
+        node.f_returns = return_t
 
         # AST 1st pass: structure
         debug = verbose > 1

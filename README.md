@@ -5,16 +5,17 @@ Example:
     from typing import List
     import py2llvm as llvm
 
-    def f(n: int, a: List[llvm.float32]) -> llvm.float32:
-        acc: llvm.float32 = 0.0
+    def f(array, n):
+        acc = 0.0
         i = 0
         while i < n:
-            acc = acc + a[i]
+            acc = acc + array[i]
             i = i + 1
 
         return acc
 
-    f = llvm.compile(f)
+    signature = List[llvm.float64], llvm.int32, llvm.float64
+    f = llvm.compile(f, signature)
     f(3, [1.0, 2.5, 4.3])
 
 Notes:
