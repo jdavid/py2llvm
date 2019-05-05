@@ -9,6 +9,7 @@ import typing
 
 from llvmlite import ir
 from llvmlite import binding
+import numpy as np
 
 #
 # Types and constants
@@ -865,9 +866,16 @@ class LLVMFunction:
     def __call__(self, *args, debug=False):
         c_args = []
         for i, arg in enumerate(args):
-            if type(arg) is list:
+            arg_t = type(arg)
+            if arg_t is list:
                 c_arg = self.c_args[i+1]
-                arg = (c_arg._type_ * len(arg))(*arg)
+                arg_t = c_arg._type_ * len(arg)
+                arg = arg_t(*arg)
+            elif arg_t is np.ndarray:
+                c_arg = self.c_args[i+1]
+                arg_t = c_arg._type_ * len(arg)
+                arg = arg_t.from_buffer(arg.data)
+
             c_args.append(arg)
 
         value = self.cfunction(*c_args)

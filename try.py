@@ -1,6 +1,7 @@
 import argparse
 from typing import List
 
+import numpy as np
 import py2llvm as llvm
 
 
@@ -19,8 +20,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     verbose = 2 if args.debug else 1
 
+    array = [1.0, 2.5, 4.3]
+    array = np.array(array, dtype=np.float64)
+    print(array.dtype, array.shape)
+
     signature = List[llvm.float64], llvm.int32, llvm.float64
     f = llvm.compile(f, signature, verbose=verbose)
     print('====== Output ======')
-    array = [1.0, 2.5, 4.3]
     f(array, len(array), debug=True)
