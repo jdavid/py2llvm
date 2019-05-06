@@ -20,6 +20,11 @@ float64 = ir.DoubleType()
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
+class Array:
+    def __init__(self, dtype, ndim):
+        self.dtype = dtype
+        self.ndim = ndim
+
 zero = ir.Constant(int64, 0)
 one = ir.Constant(int64, 1)
 
@@ -44,13 +49,7 @@ def type_to_ir_type(type_):
     if ir_type is not None:
         return ir_type
 
-    # Only List[int] and List[float] are supported
-    assert type_.__origin__ is typing.List
-    item_type = type_.__args__[0]
-    if not isinstance(item_type, ir.Type):
-        item_type = basic_types[item_type]
-
-    return item_type.as_pointer()
+    raise ValueError(f'unexpected {type_}')
 
 
 def value_to_ir_type(value):
@@ -865,18 +864,26 @@ class LLVMFunction:
 
     def __call__(self, *args, debug=False):
         c_args = []
-        for i, arg in enumerate(args):
-            arg_t = type(arg)
-            if arg_t is list:
+        for i, py_arg in enumerate(args):
+            if isinstance(py_arg, np.ndarray):
+                # NumPy array
                 c_arg = self.c_args[i+1]
-                arg_t = c_arg._type_ * len(arg)
-                arg = arg_t(*arg)
-            elif arg_t is np.ndarray:
+                arg_t = c_arg._type_ * len(py_arg)
+                arg = arg_t.from_buffer(py_arg.data)
+                c_args.append(arg)
+                for n in py_arg.shape:
+                    c_args.append(n)
+            elif isinstance(py_arg, list):
+                # List
                 c_arg = self.c_args[i+1]
-                arg_t = c_arg._type_ * len(arg)
-                arg = arg_t.from_buffer(arg.data)
-
-            c_args.append(arg)
+                n = len(py_arg)
+                arg_t = c_arg._type_ * n
+                arg = arg_t(*py_arg)
+                c_args.append(arg)
+                c_args.append(n)
+            else:
+                # Scalar
+                c_args.append(py_arg)
 
         value = self.cfunction(*c_args)
         if debug:
@@ -907,8 +914,20 @@ class LLVM:
                     'only positional arguments are supported')
 
             param_t = param.annotation if signature is None else signature[i]
-            param_t = type_to_ir_type(param_t)
-            params.append((name, param_t))
+            if isinstance(param_t, Array):
+                dtype = param_t.dtype
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append((name, dtype))
+                for n in range(param_t.ndim):
+                    params.append((f'{name}_{n}', int64))
+            elif getattr(param_t, '__origin__', None) is typing.List:
+                dtype = param_t.__args__[0]
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append((name, dtype))
+                params.append((f'{name}_0', int64))
+            else:
+                param_t = type_to_ir_type(param_t)
+                params.append((name, param_t))
 
         # The return type
         if signature is None:
@@ -1006,4 +1025,4 @@ llvm = LLVM()
 
 compile = llvm.compile
 
-__all__ = ['compile', 'float32', 'float64', 'int32', 'int64']
+__all__ = ['compile', 'Array', 'float32', 'float64', 'int32', 'int64']

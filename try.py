@@ -1,18 +1,19 @@
 import argparse
-from typing import List
 
 import numpy as np
 import py2llvm as llvm
+from py2llvm import float64, Array
 
 
-def f(array, n):
+def f(array):
     acc = 0.0
     i = 0
-    while i < n:
+    while i < array.shape[0]:
         acc = acc + array[i]
         i = i + 1
 
     return acc
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -24,7 +25,7 @@ if __name__ == '__main__':
     array = np.array(array, dtype=np.float64)
     print(array.dtype, array.shape)
 
-    signature = List[llvm.float64], llvm.int32, llvm.float64
+    signature = Array(float64, 1), float64
     f = llvm.compile(f, signature, verbose=verbose)
     print('====== Output ======')
-    f(array, len(array), debug=True)
+    f(array, debug=True)
