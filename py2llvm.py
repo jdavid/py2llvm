@@ -1,6 +1,7 @@
 # Standard Library
 import ast
 import builtins
+import collections
 import ctypes
 import inspect
 import operator
@@ -20,10 +21,23 @@ float64 = ir.DoubleType()
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
-class Array:
-    def __init__(self, dtype, ndim):
-        self.dtype = dtype
-        self.ndim = ndim
+
+class ArrayShape:
+    def __init__(self, name):
+        self.name = name
+
+class ArrayType:
+    def __init__(self, name, ptr):
+        self.name = name
+        self.ptr = ptr
+
+    @property
+    def shape(self):
+        return ArrayShape(self.name)
+
+
+def Array(dtype, ndim):
+    return type(f'Array[{dtype}, {ndim}]', (ArrayType,), dict(dtype=dtype, ndim=ndim))
 
 zero = ir.Constant(int64, 0)
 one = ir.Constant(int64, 1)
@@ -103,7 +117,6 @@ def value_to_ir_value(value):
 
     ir_type = value_to_ir_type(value)
     return ir.Constant(ir_type, value)
-
 
 
 def get_c_type(ir_type):
@@ -345,12 +358,11 @@ class BlockVisitor(NodeVisitor):
         and return type.
         """
         root = self.root
-        f_name = node.name
-        f_args = root.f_args
+        ir_signature = root.ir_signature
 
-        # Create the function
+        # Keep the function in globals so it can be called
         function = root.ir_function
-        self.root.globals[f_name] = function
+        self.root.globals[node.name] = function
 
         # Create the first block of the function, and the associated builder.
         # The first block, named "vars", is where all local variables will be
@@ -360,12 +372,19 @@ class BlockVisitor(NodeVisitor):
         builder = ir.IRBuilder(block_vars)
 
         # Function start: allocate a local variable for every argument
-        for i, (name, py_type) in enumerate(f_args):
+        for i, param in enumerate(ir_signature.parameters):
             arg = function.args[i]
-            ptr = builder.alloca(arg.type, name=name)
+            assert arg.type is param.type
+            ptr = builder.alloca(arg.type, name=param.name)
             builder.store(arg, ptr)
             # Keep Give a name to the arguments, and keep them in local namespace
-            node.locals[name] = ptr
+            node.locals[param.name] = ptr
+
+        # Keep an ArrayType instance, actually, so we can resolve .shape[idx]
+        for param in root.py_signature.parameters:
+            if issubclass(param.type, ArrayType):
+                ptr = node.locals[param.name]
+                node.locals[param.name] = param.type(param.name, ptr)
 
         # Create the second block, this is where the code proper will start,
         # after allocation of the local variables.
@@ -379,7 +398,7 @@ class BlockVisitor(NodeVisitor):
         node.block_vars = block_vars
         node.block_start = block_start
         node.builder = builder
-        node.f_rtype = root.f_returns
+        node.f_rtype = ir_signature.return_type
 
     def If_test(self, node, parent, test):
         """
@@ -425,7 +444,6 @@ class GenVisitor(NodeVisitor):
     constant can be None, whereas None means "no value" for object.
     """
 
-    module = None
     function = None
     args = None
     builder = None
@@ -683,13 +701,22 @@ class GenVisitor(NodeVisitor):
         """
         Subscript(expr value, slice slice, expr_context ctx)
         """
-        idx = value_to_ir_value(slice)
+        if isinstance(value, ArrayShape):
+            value = self.lookup(f'{value.name}_{slice}')
+            return self.builder.load(value)
+
+        if isinstance(value, ArrayType):
+            value = self.builder.load(value.ptr)
+
         assert value.type.is_pointer
+        idx = value_to_ir_value(slice)
         pointee = value.type.pointee
         if isinstance(pointee, ir.ArrayType):
             ptr = self.builder.gep(value, [zero, idx])
         else:
+            # Pointer
             ptr = self.builder.gep(value, [idx])
+
         return self.builder.load(ptr)
 
     #
@@ -847,17 +874,17 @@ class LLVMFunction:
     cfunction   -- the C function (only this one is needed to make the call)
     """
 
-    def __init__(self, c_args, func_ptr, name,
+    def __init__(self, func_ptr, c_signature, py_signature=None,
                  py_function=None, py_source=None, ir=None):
 
         # Get the function
-        self.c_args = c_args
-        self.cfunctype = ctypes.CFUNCTYPE(*c_args)
+        self.c_signature = c_signature
+        self.cfunctype = ctypes.CFUNCTYPE(*c_signature)
         self.cfunction = self.cfunctype(func_ptr)
 
         # Keep stuff for introspection
-        self.name = name
-        # Optional stuff
+        self.name = py_function.__name__
+        self.py_signature = py_signature
         self.py_function = py_function
         self.py_source = py_source
         self.ir = ir
@@ -867,18 +894,18 @@ class LLVMFunction:
         for i, py_arg in enumerate(args):
             if isinstance(py_arg, np.ndarray):
                 # NumPy array
-                c_arg = self.c_args[i+1]
-                arg_t = c_arg._type_ * len(py_arg)
-                arg = arg_t.from_buffer(py_arg.data)
+                c_type = self.c_signature[i+1]._type_
+                c_type = c_type * len(py_arg)
+                arg = c_type.from_buffer(py_arg.data)
                 c_args.append(arg)
                 for n in py_arg.shape:
                     c_args.append(n)
             elif isinstance(py_arg, list):
                 # List
-                c_arg = self.c_args[i+1]
+                c_type = self.c_signature[i+1]._type_
                 n = len(py_arg)
-                arg_t = c_arg._type_ * n
-                arg = arg_t(*py_arg)
+                c_type = c_type * n
+                arg = c_type(*py_arg)
                 c_args.append(arg)
                 c_args.append(n)
             else:
@@ -892,6 +919,14 @@ class LLVMFunction:
         return value
 
 
+Parameter = collections.namedtuple('Parameter', ['name', 'type'])
+
+class Signature:
+    def __init__(self, parameters, return_type):
+        self.parameters = parameters
+        self.return_type = return_type
+
+
 class LLVM:
 
     def __init__(self):
@@ -900,52 +935,64 @@ class LLVM:
     def compile(self, py_function, signature=None, verbose=0):
         assert type(py_function) is types.FunctionType
 
-        # The signature
+        # (1) The Python signature
         py_signature = inspect.signature(py_function)
         if signature is not None:
             assert len(signature) == len(py_signature.parameters) + 1
 
-        # The name and type of the parameters
+        # Parameters
         params = []
         for i, name in enumerate(py_signature.parameters):
             param = py_signature.parameters[name]
-            if param.kind > inspect.Parameter.POSITIONAL_OR_KEYWORD:
-                raise NotImplementedError(
-                    'only positional arguments are supported')
+            assert param.kind <= inspect.Parameter.POSITIONAL_OR_KEYWORD, \
+                   'only positional arguments are supported'
 
-            param_t = param.annotation if signature is None else signature[i]
-            if isinstance(param_t, Array):
-                dtype = param_t.dtype
-                dtype = type_to_ir_type(dtype).as_pointer()
-                params.append((name, dtype))
-                for n in range(param_t.ndim):
-                    params.append((f'{name}_{n}', int64))
-            elif getattr(param_t, '__origin__', None) is typing.List:
-                dtype = param_t.__args__[0]
-                dtype = type_to_ir_type(dtype).as_pointer()
-                params.append((name, dtype))
-                params.append((f'{name}_0', int64))
-            else:
-                param_t = type_to_ir_type(param_t)
-                params.append((name, param_t))
+            type_ = param.annotation if signature is None else signature[i]
+            params.append(Parameter(name, type_))
 
         # The return type
         if signature is None:
-            return_t = py_signature.return_annotation
+            return_type = py_signature.return_annotation
         else:
-            return_t = signature[-1]
-        return_t = type_to_ir_type(return_t)
+            return_type = signature[-1]
 
-        # The IR module
+        py_signature = Signature(params, return_type)
+
+        # (2) The IR signature
+        params = []
+        for name, type_ in py_signature.parameters:
+            if issubclass(type_, ArrayType):
+                dtype = type_.dtype
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append(Parameter(name, dtype))
+                for n in range(type_.ndim):
+                    params.append(Parameter(f'{name}_{n}', int64))
+            elif getattr(type_, '__origin__', None) is typing.List:
+                dtype = type_.__args__[0]
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append(Parameter(name, dtype))
+                params.append(Parameter(f'{name}_0', int64))
+            else:
+                dtype = type_to_ir_type(type_)
+                params.append(Parameter(name, dtype))
+
+        return_type = type_to_ir_type(py_signature.return_type)
+        ir_signature = Signature(params, return_type)
+
+        # (3) The ctypes signature (needed to call the compiled function)
+        c_signature = []
+        c_signature.append(get_c_type(ir_signature.return_type))
+        for param in ir_signature.parameters:
+            c_signature.append(get_c_type(param.type))
+
+        # (4) The IR module and function
         ir_module = ir.Module()
-        # The IR function
-        f_type = ir.FunctionType(return_t, tuple(type_ for name, type_ in params))
+        f_type = ir.FunctionType(
+            ir_signature.return_type,
+            tuple(type_ for name, type_ in ir_signature.parameters)
+        )
         f_name = py_function.__name__
         ir_function = ir.Function(ir_module, f_type, f_name)
-
-        # The ctypes function signature is needed to call the compiled function
-        c_args = [return_t] + [py_type for name, py_type in params]
-        c_args = [get_c_type(t) for t in c_args]
 
         # Python AST
         py_source = inspect.getsource(py_function)
@@ -955,9 +1002,9 @@ class LLVM:
 
         node = ast.parse(py_source)
         node.globals = inspect.stack()[1].frame.f_globals
+        node.py_signature = py_signature
+        node.ir_signature = ir_signature
         node.ir_function = ir_function
-        node.f_args = params
-        node.f_returns = return_t
 
         # AST 1st pass: structure
         debug = verbose > 1
@@ -977,8 +1024,8 @@ class LLVM:
 
         # Return the function wrapper
         func_ptr = self.engine.get_function_address(f_name)
-        return LLVMFunction(c_args, func_ptr, f_name, py_function,
-                            py_source, ir_source)
+        return LLVMFunction(func_ptr, c_signature,
+                            py_signature, py_function, py_source, ir_source)
 
     def create_execution_engine(self):
         """
