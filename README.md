@@ -1,5 +1,4 @@
-.. image:: https://travis-ci.org/jdavid/py2llvm.svg?branch=master
-   :target: http://travis-ci.org/jdavid/py2llvm
+[![Build Status](https://travis-ci.org/jdavid/py2llvm.svg?branch=master)](http://travis-ci.org/jdavid/py2llvm)
 
 This program translates a small subset of Python to LLVM IR.
 
