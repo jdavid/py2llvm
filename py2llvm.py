@@ -296,8 +296,14 @@ class NodeVisitor(BaseNodeVisitor):
     def lookup(self, name):
         if name in self.locals:
             return self.locals[name]
+
+        # To support recursivity XXX
+        if name in self.root.compiled:
+            return self.root.compiled[name]
+
         if name in self.root.globals:
             return self.root.globals[name]
+
         return getattr(builtins, name)
 
     def Module_enter(self, node, parent):
@@ -362,7 +368,7 @@ class BlockVisitor(NodeVisitor):
 
         # Keep the function in globals so it can be called
         function = root.ir_function
-        self.root.globals[node.name] = function
+        self.root.compiled[node.name] = function
 
         # Create the first block of the function, and the associated builder.
         # The first block, named "vars", is where all local variables will be
@@ -731,9 +737,12 @@ class GenVisitor(NodeVisitor):
             dim += 1
 
         # Return the value
-        return self.builder.load(ptr)
+        if ctx is ast.Load:
+            return self.builder.load(ptr)
+        elif ctx is ast.Store:
+            return ptr
 
-
+        raise NotImplementedError(f'unsupported {ctx} context')
 
     def Tuple_exit(self, node, parent, elts, ctx):
         """
@@ -843,22 +852,26 @@ class GenVisitor(NodeVisitor):
         """
         Assign(expr* targets, expr value)
         """
-        assert len(node.targets) == 1
-        assert type(node.targets[0]) is ast.Name
-        assert type(node.targets[0].ctx) is ast.Store
+        assert len(node.targets) == 1, 'Unpacking not supported'
 
-    def Assign_exit(self, node, parent, name, value):
-        name = name[0]
+    def Assign_exit(self, node, parent, targets, value):
+        target = targets[0]
         value = value_to_ir_value(value)
 
-        try:
-            ptr = self.lookup(name)
-        except AttributeError:
-            block_cur = self.builder.block
-            self.builder.position_at_end(self.block_vars)
-            ptr = self.builder.alloca(value.type, name=name)
-            self.builder.position_at_end(block_cur)
-            self.locals[name] = ptr
+        if type(target) is str:
+            # x =
+            name = target
+            try:
+                ptr = self.lookup(name)
+            except AttributeError:
+                block_cur = self.builder.block
+                self.builder.position_at_end(self.block_vars)
+                ptr = self.builder.alloca(value.type, name=name)
+                self.builder.position_at_end(block_cur)
+                self.locals[name] = ptr
+        else:
+            # x[i] =
+            ptr = target
 
         return self.builder.store(value, ptr)
 
@@ -914,10 +927,10 @@ class LLVMFunction:
 
     def __call__(self, *args, debug=False):
         c_args = []
-        for i, py_arg in enumerate(args):
+        for py_arg in args:
             if isinstance(py_arg, np.ndarray):
                 # NumPy array
-                c_type = self.c_signature[i+1]._type_
+                c_type = self.c_signature[1+len(c_args)]._type_
                 c_type = c_type * py_arg.size
                 arg = c_type.from_buffer(py_arg.data)
                 c_args.append(arg)
@@ -925,7 +938,7 @@ class LLVMFunction:
                     c_args.append(n)
             elif isinstance(py_arg, list):
                 # List
-                c_type = self.c_signature[i+1]._type_
+                c_type = self.c_signature[1+len(c_args)]._type_
                 n = len(py_arg)
                 c_type = c_type * n
                 arg = c_type(*py_arg)
@@ -1025,6 +1038,7 @@ class LLVM:
 
         node = ast.parse(py_source)
         node.globals = inspect.stack()[1].frame.f_globals
+        node.compiled = {}
         node.py_signature = py_signature
         node.ir_signature = ir_signature
         node.ir_function = ir_function

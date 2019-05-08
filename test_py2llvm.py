@@ -65,6 +65,23 @@ def test_for():
     arrays(float, (3,), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
 )
 def test_np_1dim(a):
-    f = source.one_dim_sum
+    f = source.np_1dim
     fc = llvm.compile(f)
     assert f(a) == fc(a)
+
+@given(
+    arrays(float, (3,2), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+)
+def test_np_2dim(a):
+    f = source.np_2dim
+    fc = llvm.compile(f)
+    assert f(a) == fc(a)
+
+@given(
+    arrays(float, (3,2), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+    arrays(float, (3,), elements=floats()),
+)
+def test_np_assign(a, b):
+    f = source.np_assign
+    fc = llvm.compile(f)
+    assert f(a, b) == fc(a, b)

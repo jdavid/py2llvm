@@ -55,7 +55,7 @@ def sum() -> int:
     return acc
 
 
-def one_dim_sum(array: Array(float, 1)) -> float:
+def np_1dim(array: Array(float, 1)) -> float:
     acc = 0.0
     i = 0
     while i < array.shape[0]:
@@ -63,3 +63,29 @@ def one_dim_sum(array: Array(float, 1)) -> float:
         i = i + 1
 
     return acc
+
+
+def np_2dim(array: Array(float, 2)) -> float:
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        j = 0
+        while j < array.shape[1]:
+            acc = acc + array[i,j]
+            j = j + 1
+        i = i + 1
+
+    return acc
+
+
+def np_assign(array: Array(float, 2), out: Array(float, 1)) -> int:
+    i = 0
+    while i < array.shape[1]:
+        out[i] = 0.0
+        j = 0
+        while j < array.shape[0]:
+            out[i] = out[i] + array[j,i]
+            j = j + 1
+        i = i + 1
+
+    return 0
