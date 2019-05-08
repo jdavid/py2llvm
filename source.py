@@ -1,9 +1,14 @@
+from py2llvm import Array
+
+
 def ret_const() -> float:
     return 42
+
 
 def ret_var() -> float:
     a: float = 42
     return a
+
 
 def ops() -> int:
     a: int = 2
@@ -11,6 +16,7 @@ def ops() -> int:
     c: int = (a + b) * 2 - 3
     c: int = c / 3
     return c
+
 
 def double(x: int) -> int:
     return x * 2
@@ -46,4 +52,14 @@ def sum() -> int:
     acc = 0
     for x in [1, 2, 3, 4, 5]:
         acc = acc + x
+    return acc
+
+
+def one_dim_sum(array: Array(float, 1)) -> float:
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
     return acc

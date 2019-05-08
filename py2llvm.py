@@ -705,19 +705,42 @@ class GenVisitor(NodeVisitor):
             value = self.lookup(f'{value.name}_{slice}')
             return self.builder.load(value)
 
+        # To make it simpler, make the slice to be a list always
+        if type(slice) is not list:
+            slice = [slice]
+
+        # Get the pointer to the beginning
         if isinstance(value, ArrayType):
-            value = self.builder.load(value.ptr)
+            ptr = self.builder.load(value.ptr)
 
-        assert value.type.is_pointer
-        idx = value_to_ir_value(slice)
-        pointee = value.type.pointee
-        if isinstance(pointee, ir.ArrayType):
-            ptr = self.builder.gep(value, [zero, idx])
-        else:
-            # Pointer
-            ptr = self.builder.gep(value, [idx])
+        assert ptr.type.is_pointer
+        if isinstance(ptr.type.pointee, ir.ArrayType):
+            ptr = self.builder.gep(ptr, [zero])
 
+        # Support for multidimensional arrays
+        dim = 1
+        while slice:
+            idx = slice.pop(0)
+            idx = value_to_ir_value(idx)
+            for i in range(dim, value.ndim):
+                dim_len = self.lookup(f'{value.name}_{dim}')
+                dim_len = self.builder.load(dim_len)
+                idx = self.builder.mul(idx, dim_len)
+
+            ptr = self.builder.gep(ptr, [idx])
+            dim += 1
+
+        # Return the value
         return self.builder.load(ptr)
+
+
+
+    def Tuple_exit(self, node, parent, elts, ctx):
+        """
+        Tuple(expr* elts, expr_context ctx)
+        """
+        assert ctx is ast.Load
+        return elts
 
     #
     # if .. elif .. else
@@ -895,7 +918,7 @@ class LLVMFunction:
             if isinstance(py_arg, np.ndarray):
                 # NumPy array
                 c_type = self.c_signature[i+1]._type_
-                c_type = c_type * len(py_arg)
+                c_type = c_type * py_arg.size
                 arg = c_type.from_buffer(py_arg.data)
                 c_args.append(arg)
                 for n in py_arg.shape:

@@ -1,5 +1,6 @@
 from hypothesis import given
-from hypothesis.strategies import integers
+from hypothesis.strategies import integers, floats
+from hypothesis.extra.numpy import arrays
 
 from py2llvm import llvm
 import source
@@ -55,7 +56,15 @@ def test_boolean(a, b, c):
     fc = llvm.compile(f)
     assert f(a, b, c) == fc(a, b, c)
 
-def test_loop():
+def test_for():
     f = source.sum
     fc = llvm.compile(f)
     assert f() == fc()
+
+@given(
+    arrays(float, (3,), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+)
+def test_np_1dim(a):
+    f = source.one_dim_sum
+    fc = llvm.compile(f)
+    assert f(a) == fc(a)
