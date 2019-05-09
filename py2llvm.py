@@ -199,10 +199,9 @@ class BaseNodeVisitor:
     @classmethod
     def get_fields(cls, node):
         fields = {
-            # returns before body (and after args)
-            ast.FunctionDef: ('name', 'args', 'returns', 'body', 'decorator_list'),
-            # Do not traverse ctx
-            ast.Name: (),
+            # Skip "decorator_list", and traverse "returns" before "body"
+            # ('name', 'args', 'body', 'decorator_list', 'returns')
+            ast.FunctionDef: ('name', 'args', 'returns', 'body'),
         }
 
         return fields.get(type(node), node._fields)
@@ -352,7 +351,6 @@ class BlockVisitor(NodeVisitor):
                     stmt* body, expr* decorator_list, expr? returns)
         """
         assert type(parent) is ast.Module, 'nested functions not implemented'
-        assert not node.decorator_list, 'decorators not implemented'
 
         # Initialize function context
         node.locals = {}
@@ -894,7 +892,14 @@ class GenVisitor(NodeVisitor):
         return self.builder.call(func, args)
 
 
-class LLVMFunction:
+Parameter = collections.namedtuple('Parameter', ['name', 'type'])
+
+class Signature:
+    def __init__(self, parameters, return_type):
+        self.parameters = parameters
+        self.return_type = return_type
+
+class Function:
     """
     Wraps a Python function. Compiled to IR, it can be executed with ctypes:
 
@@ -910,22 +915,118 @@ class LLVMFunction:
     cfunction   -- the C function (only this one is needed to make the call)
     """
 
-    def __init__(self, func_ptr, c_signature, py_signature=None,
-                 py_function=None, py_source=None, ir=None):
+    def __init__(self, llvm, py_function, signature):
+        assert type(py_function) is types.FunctionType
+        self.llvm = llvm
+        self.py_function = py_function
+        self.name = py_function.__name__
 
-        # Get the function
+        self.signature = self.__get_signature(signature)
+        self.compiled = False
+
+    def __get_signature(self, signature):
+        inspect_signature = inspect.signature(self.py_function)
+        if signature is not None:
+            assert len(signature) == len(inspect_signature.parameters) + 1
+
+        # Parameters
+        params = []
+        for i, name in enumerate(inspect_signature.parameters):
+            param = inspect_signature.parameters[name]
+            assert param.kind <= inspect.Parameter.POSITIONAL_OR_KEYWORD, \
+                   'only positional arguments are supported'
+
+            type_ = param.annotation if signature is None else signature[i]
+            params.append(Parameter(name, type_))
+
+        # The return type
+        if signature is None:
+            return_type = inspect_signature.return_annotation
+        else:
+            return_type = signature[-1]
+
+        return Signature(params, return_type)
+
+
+    def compile(self, verbose=0):
+        # (1) The IR signature
+        params = []
+        for name, type_ in self.signature.parameters:
+            if issubclass(type_, ArrayType):
+                dtype = type_.dtype
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append(Parameter(name, dtype))
+                for n in range(type_.ndim):
+                    params.append(Parameter(f'{name}_{n}', int64))
+            elif getattr(type_, '__origin__', None) is typing.List:
+                dtype = type_.__args__[0]
+                dtype = type_to_ir_type(dtype).as_pointer()
+                params.append(Parameter(name, dtype))
+                params.append(Parameter(f'{name}_0', int64))
+            else:
+                dtype = type_to_ir_type(type_)
+                params.append(Parameter(name, dtype))
+
+        return_type = type_to_ir_type(self.signature.return_type)
+        ir_signature = Signature(params, return_type)
+
+        # (2) The ctypes signature (needed to call the compiled function)
+        c_signature = []
+        c_signature.append(get_c_type(ir_signature.return_type))
+        for param in ir_signature.parameters:
+            c_signature.append(get_c_type(param.type))
+
+        # (3) The IR module and function
+        ir_module = ir.Module()
+        f_type = ir.FunctionType(
+            ir_signature.return_type,
+            tuple(type_ for name, type_ in ir_signature.parameters)
+        )
+        ir_function = ir.Function(ir_module, f_type, self.name)
+
+        # (4) Python AST
+        self.py_source = inspect.getsource(self.py_function)
+        if verbose:
+            print('====== Source ======')
+            print(self.py_source)
+
+        node = ast.parse(self.py_source)
+        node.globals = inspect.stack()[1].frame.f_globals
+        node.compiled = {}
+        node.py_signature = self.signature
+        node.ir_signature = ir_signature
+        node.ir_function = ir_function
+
+        # AST 1st pass: structure
+        debug = verbose > 1
+        if debug: print('====== Debug: 1st pass ======')
+        BlockVisitor(debug).traverse(node)
+
+        # AST 2nd pass: generate
+        if debug: print('====== Debug: 2nd pass ======')
+        GenVisitor(debug).traverse(node)
+
+        # (5) IR code
+        self.ir = str(ir_module)
+        if verbose:
+            print('====== IR ======')
+            print(self.ir)
+        self.llvm.compile_ir(self.ir) # Compile
+
+        # (6) C function
+        func_ptr = self.llvm.engine.get_function_address(self.name)
         self.c_signature = c_signature
         self.cfunctype = ctypes.CFUNCTYPE(*c_signature)
         self.cfunction = self.cfunctype(func_ptr)
 
-        # Keep stuff for introspection
-        self.name = py_function.__name__
-        self.py_signature = py_signature
-        self.py_function = py_function
-        self.py_source = py_source
-        self.ir = ir
+        # (7) Done
+        self.compiled = True
 
-    def __call__(self, *args, debug=False):
+
+    def __call__(self, *args, verbose=0):
+        if self.compiled is False:
+            self.compile(verbose)
+
         c_args = []
         for py_arg in args:
             if isinstance(py_arg, np.ndarray):
@@ -949,18 +1050,13 @@ class LLVMFunction:
                 c_args.append(py_arg)
 
         value = self.cfunction(*c_args)
-        if debug:
-            print(f'{args} => {value}')
+        if verbose:
+            print('====== Output ======')
+            print(f'args = {args}')
+            print(f'ret  = {value}')
 
         return value
 
-
-Parameter = collections.namedtuple('Parameter', ['name', 'type'])
-
-class Signature:
-    def __init__(self, parameters, return_type):
-        self.parameters = parameters
-        self.return_type = return_type
 
 
 class LLVM:
@@ -968,101 +1064,31 @@ class LLVM:
     def __init__(self):
         self.engine = self.create_execution_engine()
 
+    def lazy(self, py_function, signature=None):
+        if type(py_function) is types.FunctionType:
+            return Function(self, py_function, signature)
+
+        # Called as a decorator
+        signature = py_function
+        def wrapper(py_function):
+            return Function(self, py_function, signature)
+
+        return wrapper
+
     def compile(self, py_function, signature=None, verbose=0):
-        assert type(py_function) is types.FunctionType
+        if type(py_function) is types.FunctionType:
+            function = self.lazy(py_function, signature)
+            function.compile(verbose)
+            return function
 
-        # (1) The Python signature
-        py_signature = inspect.signature(py_function)
-        if signature is not None:
-            assert len(signature) == len(py_signature.parameters) + 1
+        # Called as a decorator with parameters
+        signature = py_function
+        def wrapper(py_function):
+            function = self.lazy(py_function, signature)
+            function.compile(verbose)
+            return function
 
-        # Parameters
-        params = []
-        for i, name in enumerate(py_signature.parameters):
-            param = py_signature.parameters[name]
-            assert param.kind <= inspect.Parameter.POSITIONAL_OR_KEYWORD, \
-                   'only positional arguments are supported'
-
-            type_ = param.annotation if signature is None else signature[i]
-            params.append(Parameter(name, type_))
-
-        # The return type
-        if signature is None:
-            return_type = py_signature.return_annotation
-        else:
-            return_type = signature[-1]
-
-        py_signature = Signature(params, return_type)
-
-        # (2) The IR signature
-        params = []
-        for name, type_ in py_signature.parameters:
-            if issubclass(type_, ArrayType):
-                dtype = type_.dtype
-                dtype = type_to_ir_type(dtype).as_pointer()
-                params.append(Parameter(name, dtype))
-                for n in range(type_.ndim):
-                    params.append(Parameter(f'{name}_{n}', int64))
-            elif getattr(type_, '__origin__', None) is typing.List:
-                dtype = type_.__args__[0]
-                dtype = type_to_ir_type(dtype).as_pointer()
-                params.append(Parameter(name, dtype))
-                params.append(Parameter(f'{name}_0', int64))
-            else:
-                dtype = type_to_ir_type(type_)
-                params.append(Parameter(name, dtype))
-
-        return_type = type_to_ir_type(py_signature.return_type)
-        ir_signature = Signature(params, return_type)
-
-        # (3) The ctypes signature (needed to call the compiled function)
-        c_signature = []
-        c_signature.append(get_c_type(ir_signature.return_type))
-        for param in ir_signature.parameters:
-            c_signature.append(get_c_type(param.type))
-
-        # (4) The IR module and function
-        ir_module = ir.Module()
-        f_type = ir.FunctionType(
-            ir_signature.return_type,
-            tuple(type_ for name, type_ in ir_signature.parameters)
-        )
-        f_name = py_function.__name__
-        ir_function = ir.Function(ir_module, f_type, f_name)
-
-        # Python AST
-        py_source = inspect.getsource(py_function)
-        if verbose:
-            print('====== Source ======')
-            print(py_source)
-
-        node = ast.parse(py_source)
-        node.globals = inspect.stack()[1].frame.f_globals
-        node.compiled = {}
-        node.py_signature = py_signature
-        node.ir_signature = ir_signature
-        node.ir_function = ir_function
-
-        # AST 1st pass: structure
-        debug = verbose > 1
-        if debug: print('====== Debug: 1st pass ======')
-        BlockVisitor(debug).traverse(node)
-
-        # AST 2nd pass: generate
-        if debug: print('====== Debug: 2nd pass ======')
-        GenVisitor(debug).traverse(node)
-
-        # IR code
-        ir_source = str(ir_module)
-        if verbose:
-            print('====== IR ======')
-            print(ir_source)
-        self.compile_ir(ir_source) # Compile
-
-        # Return the function wrapper
-        func_ptr = self.engine.get_function_address(f_name)
-        return LLVMFunction(func_ptr, c_signature,
-                            py_signature, py_function, py_source, ir_source)
+        return wrapper
 
     def create_execution_engine(self):
         """
@@ -1107,6 +1133,11 @@ llvm = LLVM()
 # Public interface
 #
 
+lazy = llvm.lazy
 compile = llvm.compile
 
-__all__ = ['compile', 'Array', 'float32', 'float64', 'int32', 'int64']
+__all__ = [
+    'compile', 'lazy',                      # Functions
+    'float32', 'float64', 'int32', 'int64', # Scalar types
+    'Array',                                # Arrays
+]

@@ -5,7 +5,8 @@ import py2llvm as llvm
 from py2llvm import float64, int32, Array
 
 
-def f(array, out):
+@llvm.lazy
+def f(array: Array(float64, 2), out: Array(float64, 1)) -> int32:
     i = 0
     while i < array.shape[1]:
         out[i] = 0.0
@@ -24,6 +25,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     verbose = 2 if args.debug else 1
 
+    # Prepare function arguments
     array = [
         [1.0, 2.5, 4.3],
         [0.5, 2.0, 4.2],
@@ -31,8 +33,6 @@ if __name__ == '__main__':
     array = np.array(array, dtype=np.float64)
     out = np.empty((3,), dtype=np.float64)
 
-    signature = Array(float64, 2), Array(float64, 1), int32
-    fc = llvm.compile(f, signature, verbose=verbose)
-    print('====== Output ======')
-    fc(array, out, debug=True)
+    # Call (calls compile implicitly)
+    f(array, out, verbose=verbose)
     print(out)

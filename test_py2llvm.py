@@ -1,8 +1,10 @@
 from hypothesis import given
 from hypothesis.strategies import integers, floats
 from hypothesis.extra.numpy import arrays
+import numpy as np
 
 from py2llvm import llvm
+from py2llvm import Array
 import source
 
 
@@ -85,3 +87,89 @@ def test_np_assign(a, b):
     f = source.np_assign
     fc = llvm.compile(f)
     assert f(a, b) == fc(a, b)
+
+
+#
+# Test calling conventions
+#
+
+signature = Array(float, 1), float
+
+def f(array):
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+def f_hints(array: Array(float, 1)) -> float:
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+@llvm.compile(signature)
+def f_dec(array):
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+@llvm.lazy(signature)
+def f_dec_lazy(array):
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+@llvm.compile
+def f_dec_hints(array: Array(float, 1)) -> float:
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+@llvm.lazy
+def f_dec_hints_lazy(array: Array(float, 1)) -> float:
+    acc = 0.0
+    i = 0
+    while i < array.shape[0]:
+        acc = acc + array[i]
+        i = i + 1
+
+    return acc
+
+
+def test_calling_conventions():
+    array = np.array([1.0, 2.5, 4.3])
+
+    # With type hints
+    a = llvm.compile(f_hints)
+    b = llvm.lazy(f_hints)
+    c = llvm.lazy(f_hints)
+    c.compile()
+    assert a(array) == b(array) == c(array)
+
+    # With signature
+    a = llvm.compile(f, signature)
+    b = llvm.lazy(f, signature)
+    c = llvm.lazy(f, signature)
+    c.compile()
+    assert a(array) == b(array) == c(array)
+
+    # Decorators
+    assert f_dec(array) == f_dec_lazy(array) == f_dec_hints(array) == f_dec_hints_lazy(array)
