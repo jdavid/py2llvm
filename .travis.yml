@@ -12,4 +12,6 @@ matrix:
       before_install: choco install python
       env: PATH=/c/Python37:/c/Python37/Scripts:$PATH
 
+install: pip install -r requirements.txt
+
 script: pytest
