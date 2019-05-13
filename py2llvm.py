@@ -1011,7 +1011,7 @@ class Function:
         if verbose:
             print('====== IR ======')
             print(self.ir)
-        self.llvm.compile_ir(self.ir) # Compile
+        self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
 
         # (6) C function
         func_ptr = self.llvm.engine.get_function_address(self.name)
@@ -1104,7 +1104,7 @@ class LLVM:
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
         return engine
 
-    def compile_ir(self, llvm_ir):
+    def compile_ir(self, llvm_ir, name, verbose):
         """
         Compile the LLVM IR string with the given engine.
         The compiled module object is returned.
@@ -1114,10 +1114,32 @@ class LLVM:
         # Create a LLVM module object from the IR
         mod = binding.parse_assembly(llvm_ir)
         mod.verify()
+        if verbose:
+            print('====== IR (parsed) ======')
+            print(mod)
+
+        # Optimize
+        # With level 1-3 already a number of optimization passes are applied
+        fref = mod.get_function(name)
+        pmb = binding.PassManagerBuilder()
+        pmb.opt_level = 3 # 0-3 (default=2)
+        fpm = binding.FunctionPassManager(mod)
+        #fpm.add_sroa_pass()
+        #fpm.add_mem2reg_pass()
+        pmb.populate(fpm)
+        fpm.initialize()
+        fpm.run(fref)
+        fpm.finalize()
+
         # Now add the module and make sure it is ready for execution
         engine.add_module(mod)
         engine.finalize_object()
         engine.run_static_constructors()
+
+        if verbose:
+            print('====== IR (optimized) ======')
+            print(mod)
+
         return mod
 
 
