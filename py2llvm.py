@@ -1098,7 +1098,17 @@ class LLVM:
         """
         # Create a target machine representing the host
         target = binding.Target.from_default_triple()
-        target_machine = target.create_target_machine()
+        self.triple = target.triple # Keep the triple for later
+        # Passing cpu, freatures and opt has not proved to be faster, but do it
+        # anyway, just to show it.
+        cpu = binding.get_host_cpu_name()
+        features = binding.get_host_cpu_features()
+        target_machine = target.create_target_machine(
+            cpu=cpu,
+            features=features.flatten(),
+            opt=3,
+        )
+
         # And an execution engine with an empty backing module
         backing_mod = binding.parse_assembly("")
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
@@ -1114,6 +1124,8 @@ class LLVM:
         # Create a LLVM module object from the IR
         mod = binding.parse_assembly(llvm_ir)
         mod.verify()
+        # Assign triple, so the IR can be saved and compiled with llc
+        mod.triple = self.triple
         if verbose:
             print('====== IR (parsed) ======')
             print(mod)

@@ -83,3 +83,7 @@ About LLVM:
 - https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/
 - https://www.llvm.org/docs/tutorial/index.html
 - https://llvm.org/docs/LangRef.html
+
+About performance:
+
+- https://llvm.org/docs/Frontend/PerformanceTips.html
