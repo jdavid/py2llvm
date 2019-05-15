@@ -2,17 +2,15 @@ import argparse
 
 import numpy as np
 import py2llvm as llvm
-from py2llvm import float64, int32, Array
+from py2llvm import float64, Array
 
 
 @llvm.lazy
-def f(array: Array(float64, 2), out: Array(float64, 1)) -> int32:
+def f(array: Array(float64, 2), out: Array(float64, 1)) -> None:
     for i in range(array.shape[1]):
         out[i] = 0.0
         for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
-
-    return 0
 
 
 if __name__ == '__main__':

@@ -16,6 +16,7 @@ import numpy as np
 # Types and constants
 #
 
+void = ir.VoidType()
 float32 = ir.FloatType()
 float64 = ir.DoubleType()
 int32 = ir.IntType(32)
@@ -80,8 +81,17 @@ def type_to_ir_type(type_):
     if isinstance(type_, ir.Type):
         return type_
 
+    # None is a special case
+    # https://docs.python.org/3/library/typing.html#type-aliases
+    if type_ is None:
+        type_ = type(None)
+
     # Basic types
-    basic_types = {float: float64, int: int64}
+    basic_types = {
+        float: float64,
+        int: int64,
+        type(None): void,
+    }
     ir_type = basic_types.get(type_)
     if ir_type is not None:
         return ir_type
@@ -148,11 +158,11 @@ def get_c_type(ir_type):
         float64: ctypes.c_double,
         int32: ctypes.c_int32,
         int64: ctypes.c_int64,
+        void: None,
     }
 
-    c_type = basic_types.get(ir_type)
-    if c_type is not None:
-        return c_type
+    if ir_type in basic_types:
+        return basic_types[ir_type]
 
     assert ir_type.is_pointer
     return ctypes.POINTER(basic_types[ir_type.pointee])
@@ -612,6 +622,10 @@ class GenVisitor(NodeVisitor):
         self.block_vars = node.block_vars
 
     def FunctionDef_exit(self, node, parent, *args):
+        if self.root.py_signature.return_type is None:
+            if not self.builder.block.is_terminated:
+                node.builder.ret_void()
+
         node.builder.position_at_end(node.block_vars)
         node.builder.branch(node.block_start)
 
@@ -927,6 +941,10 @@ class GenVisitor(NodeVisitor):
         """
         Return(expr? value)
         """
+        if value is None:
+            assert self.f_rtype is void
+            return self.builder.ret_void()
+
         value = self.convert(value, self.f_rtype)
         self.ltype = None
         return self.builder.ret(value)

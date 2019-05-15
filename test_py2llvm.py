@@ -30,6 +30,27 @@ def test_ops():
     fc = llvm.compile(f)
     assert f() == fc()
 
+#
+# Return None
+#
+
+def test_none():
+    f = source.none1
+    fc = llvm.compile(f)
+    assert f() == fc()
+
+    f = source.none2
+    fc = llvm.compile(f)
+    assert f() == fc()
+
+    f = source.none3
+    fc = llvm.compile(f)
+    assert f() == fc()
+
+#
+# Arguments
+#
+
 @given(integers(int64_min//2, int64_max//2))
 def test_int(x):
     f = source.double

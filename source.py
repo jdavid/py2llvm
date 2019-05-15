@@ -18,6 +18,16 @@ def ops() -> int:
     return c
 
 
+def none1() -> None:
+    pass
+
+def none2() -> None:
+    return
+
+def none3() -> None:
+    return None
+
+
 def double(x: int) -> int:
     return x * 2
 
