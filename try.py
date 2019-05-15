@@ -7,14 +7,10 @@ from py2llvm import float64, int32, Array
 
 @llvm.lazy
 def f(array: Array(float64, 2), out: Array(float64, 1)) -> int32:
-    i = 0
-    while i < array.shape[1]:
+    for i in range(array.shape[1]):
         out[i] = 0.0
-        j = 0
-        while j < array.shape[0]:
+        for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
-            j = j + 1
-        i = i + 1
 
     return 0
 

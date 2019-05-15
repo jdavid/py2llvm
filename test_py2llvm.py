@@ -58,8 +58,13 @@ def test_boolean(a, b, c):
     fc = llvm.compile(f)
     assert f(a, b, c) == fc(a, b, c)
 
+
+#
+# Loops and arrays
+#
+
 def test_for():
-    f = source.sum
+    f = source.for_
     fc = llvm.compile(f)
     assert f() == fc()
 
@@ -88,9 +93,25 @@ def test_np_assign(a, b):
     fc = llvm.compile(f)
     assert f(a, b) == fc(a, b)
 
+@given(
+    arrays(float, (3,2), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+    arrays(float, (3,), elements=floats()),
+)
+def test_for_range(a, b):
+    f = source.for_range
+    fc = llvm.compile(f)
+    assert f(a, b) == fc(a, b)
+
+@given(
+    arrays(float, (5,), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+)
+def test_for_range_start_step(a):
+    f = source.for_range_start_step
+    fc = llvm.compile(f)
+    assert f(a) == fc(a)
 
 #
-# Test calling conventions
+# Calling conventions
 #
 
 signature = Array(float, 1), float

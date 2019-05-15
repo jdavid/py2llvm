@@ -48,7 +48,7 @@ def boolean(a: int, b: int, c: int) -> int:
     return a * 2
 
 
-def sum() -> int:
+def for_() -> int:
     acc = 0
     for x in [1, 2, 3, 4, 5]:
         acc = acc + x
@@ -89,3 +89,19 @@ def np_assign(array: Array(float, 2), out: Array(float, 1)) -> int:
         i = i + 1
 
     return 0
+
+
+def for_range(array: Array(float, 2), out: Array(float, 1)) -> int:
+    for i in range(array.shape[1]):
+        out[i] = 0.0
+        for j in range(array.shape[0]):
+            out[i] = out[i] + array[j,i]
+
+    return 0
+
+
+def for_range_start_step(array: Array(float, 1)) -> float:
+    acc = 0.0
+    for i in range(2, array.shape[0], 3):
+        acc = acc + array[i]
+    return acc

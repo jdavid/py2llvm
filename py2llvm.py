@@ -21,6 +21,9 @@ float64 = ir.DoubleType()
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
+zero = ir.Constant(int64, 0)
+one = ir.Constant(int64, 1)
+
 
 class ArrayShape:
     def __init__(self, name):
@@ -39,8 +42,28 @@ class ArrayType:
 def Array(dtype, ndim):
     return type(f'Array[{dtype}, {ndim}]', (ArrayType,), dict(dtype=dtype, ndim=ndim))
 
-zero = ir.Constant(int64, 0)
-one = ir.Constant(int64, 1)
+
+class Range:
+
+    def __init__(self, *args):
+        # Defaults
+        start = zero
+        stop = None
+        step = one
+
+        # Unpack
+        n = len(args)
+        if n == 1:
+            stop, = args
+        elif n == 2:
+            start, stop = args
+        else:
+            start, stop, step = args
+
+        # Keep IR values
+        self.start = value_to_ir_value(start)
+        self.stop = value_to_ir_value(stop)
+        self.step = value_to_ir_value(step)
 
 
 def value_to_type(value):
@@ -772,29 +795,53 @@ class GenVisitor(NodeVisitor):
     # for ...
     #
     def For_iter(self, node, parent, expr):
-        node.i = self.builder.alloca(int64, name='i')       # i
-        self.builder.store(zero, node.i)                    # i = 0
-        arr = self.builder.alloca(expr.type)                # arr
-        self.builder.store(expr, arr)                       # arr = expr
-        n = ir.Constant(int64, expr.type.count)             # n = len(expr)
-        self.builder.branch(node.block_for)                 # br %for
+        """
+        For(expr target, expr iter, stmt* body, stmt* orelse)
+        """
+        target = node.target.id
+        if isinstance(expr, Range):
+            start = expr.start
+            stop = expr.stop
+            node.step = expr.step
+            name = target
+        else:
+            start = zero
+            stop = ir.Constant(int64, expr.type.count)
+            node.step = one
+            name = 'i'
+            # Allocate and store the literal array to iterate
+            arr = self.builder.alloca(expr.type)
+            self.builder.store(expr, arr)
 
-        self.builder.position_at_end(node.block_for)         # %for
-        idx = self.builder.load(node.i)                      # %idx = i
-        test = self.builder.icmp_unsigned('<', idx, n)       # %idx < n
+        # Allocate and initialize the index variable
+        node.i = self.builder.alloca(int64, name=name)
+        self.builder.store(start, node.i)                         # i = start
+        self.builder.branch(node.block_for)                       # br %for
+
+        # Stop condition
+        self.builder.position_at_end(node.block_for)              # %for
+        idx = self.builder.load(node.i)                           # %idx = i
+        test = self.builder.icmp_unsigned('<', idx, stop)         # %idx < stop
         self.builder.cbranch(test, node.block_body, node.block_next) # br %test %body %next
+        self.builder.position_at_end(node.block_body)             # %body
 
-        self.builder.position_at_end(node.block_body)        # %body
-        ptr = self.builder.gep(arr, [zero, idx])             # expr[idx]
-        x = self.builder.load(ptr)                           # % = expr[i]
-        self.locals[node.target.id] = x
+        # Keep variable to use within the loop
+        if isinstance(expr, Range):
+            self.locals[target] = idx
+        else:
+            ptr = self.builder.gep(arr, [zero, idx])              # expr[idx]
+            x = self.builder.load(ptr)                            # % = expr[i]
+            self.locals[target] = x
 
     def For_exit(self, node, parent, *args):
-        a = self.builder.load(node.i)                        # % = i
-        b = self.builder.add(a, one)                         # % = % + 1
-        self.builder.store(b, node.i)                        # i = %
-        self.builder.branch(node.block_for)                  # br %for
-        self.builder.position_at_end(node.block_next)        # %next
+        # Increment index variable
+        a = self.builder.load(node.i)                             # % = i
+        b = self.builder.add(a, node.step)                        # % = % + step
+        self.builder.store(b, node.i)                             # i = %
+        # Continue
+        self.builder.branch(node.block_for)                       # br %for
+        self.builder.position_at_end(node.block_next)             # %next
+
     #
     # while ...
     #
@@ -889,6 +936,9 @@ class GenVisitor(NodeVisitor):
         Call(expr func, expr* args, keyword* keywords)
         """
         assert not keywords
+        if func is range:
+            return Range(*args)
+
         return self.builder.call(func, args)
 
 
