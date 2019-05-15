@@ -357,6 +357,40 @@ class NodeVisitor(BaseNodeVisitor):
         # We don't parse arguments because arguments are handled in compile
         return False
 
+    def Num_visit(self, node, parent):
+        """
+        Num(object n)
+        """
+        return node.n
+
+
+class InferVisitor(NodeVisitor):
+    """
+    This optional pass is to infer the return type of the function if not given
+    explicitely.
+    """
+
+    def NameConstant_exit(self, node, parent, value):
+        """
+        NameConstant(singleton value)
+        """
+        return value
+
+    def Return_exit(self, node, parent, value):
+        return_type = type(value)
+
+        root = self.root
+        if root.return_type is inspect._empty:
+            root.return_type = return_type
+            return
+
+        assert root.return_type is return_type
+
+    def FunctionDef_exit(self, node, parent, *args):
+        root = self.root
+        if root.return_type is inspect._empty:
+            root.return_type = None
+
 
 class BlockVisitor(NodeVisitor):
     """
@@ -365,8 +399,6 @@ class BlockVisitor(NodeVisitor):
     - We fail early for features we don't support.
     - We populate the AST attaching structure IR objects (module, functions,
       blocks). These will be used in the 2nd pass.
-
-    In general we should do here as much as we can.
     """
 
     def Name_visit(self, node, parent):
@@ -383,7 +415,6 @@ class BlockVisitor(NodeVisitor):
         return None
 
     def FunctionDef_enter(self, node, parent):
-
         """
         FunctionDef(identifier name, arguments args,
                     stmt* body, expr* decorator_list, expr? returns)
@@ -558,12 +589,6 @@ class GenVisitor(NodeVisitor):
         if ctx is ast.Store:
             return name
         raise NotImplementedError(f'unexpected ctx={ctx}')
-
-    def Num_visit(self, node, parent):
-        """
-        Num(object n)
-        """
-        return node.n
 
     def boolop_visit(self, node, parent):
         return type(node)
@@ -1022,9 +1047,26 @@ class Function:
 
 
     def compile(self, verbose=0, *args):
-        nargs = len(args)
+        debug = verbose > 1
 
-        # (1) The IR signature
+        # (1) Python AST
+        self.py_source = inspect.getsource(self.py_function)
+        if verbose:
+            print('====== Source ======')
+            print(self.py_source)
+
+        node = ast.parse(self.py_source)
+
+        # (2) Infer return type if not given
+        return_type = self.signature.return_type
+        if return_type is inspect._empty:
+            node.return_type = return_type
+            InferVisitor(debug).traverse(node)
+            return_type = node.return_type
+            self.signature.return_type = return_type
+
+        # (3) The IR signature
+        nargs = len(args)
         params = []
         for i, (name, type_) in enumerate(self.signature.parameters):
             # Get type from argument if not given explicitely
@@ -1053,16 +1095,16 @@ class Function:
                 dtype = type_to_ir_type(type_)
                 params.append(Parameter(name, dtype))
 
-        return_type = type_to_ir_type(self.signature.return_type)
+        return_type = type_to_ir_type(return_type)
         ir_signature = Signature(params, return_type)
 
-        # (2) The ctypes signature (needed to call the compiled function)
+        # (4) The ctypes signature (needed to call the compiled function)
         c_signature = []
         c_signature.append(get_c_type(ir_signature.return_type))
         for param in ir_signature.parameters:
             c_signature.append(get_c_type(param.type))
 
-        # (3) The IR module and function
+        # (5) The IR module and function
         ir_module = ir.Module()
         f_type = ir.FunctionType(
             ir_signature.return_type,
@@ -1070,42 +1112,34 @@ class Function:
         )
         ir_function = ir.Function(ir_module, f_type, self.name)
 
-        # (4) Python AST
-        self.py_source = inspect.getsource(self.py_function)
-        if verbose:
-            print('====== Source ======')
-            print(self.py_source)
-
-        node = ast.parse(self.py_source)
+        # (6) AST pass: structure
         node.globals = inspect.stack()[1].frame.f_globals
         node.compiled = {}
         node.py_signature = self.signature
         node.ir_signature = ir_signature
         node.ir_function = ir_function
 
-        # AST 1st pass: structure
-        debug = verbose > 1
         if debug: print('====== Debug: 1st pass ======')
         BlockVisitor(debug).traverse(node)
 
-        # AST 2nd pass: generate
+        # (7) AST pass: generate
         if debug: print('====== Debug: 2nd pass ======')
         GenVisitor(debug).traverse(node)
 
-        # (5) IR code
+        # (8) IR code
         self.ir = str(ir_module)
         if verbose:
             print('====== IR ======')
             print(self.ir)
         self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
 
-        # (6) C function
+        # (9) C function
         func_ptr = self.llvm.engine.get_function_address(self.name)
         self.c_signature = c_signature
         self.cfunctype = ctypes.CFUNCTYPE(*c_signature)
         self.cfunction = self.cfunctype(func_ptr)
 
-        # (7) Done
+        # (10) Done
         self.compiled = True
 
 

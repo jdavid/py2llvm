@@ -5,11 +5,13 @@ import py2llvm as llvm
 
 
 @llvm.lazy
-def f(array, out) -> None:
+def f(array, out):
     for i in range(array.shape[1]):
         out[i] = 0.0
         for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
+
+    return 5.0
 
 
 if __name__ == '__main__':
