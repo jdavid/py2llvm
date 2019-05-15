@@ -91,6 +91,11 @@ def type_to_ir_type(type_):
         float: float64,
         int: int64,
         type(None): void,
+        # Numpy
+        np.float32: float32,
+        np.float64: float64,
+        np.int32: int32,
+        np.int32: int64,
     }
     ir_type = basic_types.get(type_)
     if ir_type is not None:
@@ -1016,10 +1021,23 @@ class Function:
         return Signature(params, return_type)
 
 
-    def compile(self, verbose=0):
+    def compile(self, verbose=0, *args):
+        nargs = len(args)
+
         # (1) The IR signature
         params = []
-        for name, type_ in self.signature.parameters:
+        for i, (name, type_) in enumerate(self.signature.parameters):
+            # Get type from argument if not given explicitely
+            arg = args[i] if i < nargs else None
+            if type_ is inspect._empty:
+                assert arg is not None
+                if isinstance(arg, np.ndarray):
+                    type_ = Array(arg.dtype.type, arg.ndim)
+                else:
+                    raise NotImplementedError(f'unexpected {arg}')
+                self.signature.parameters[i] = Parameter(name, type_)
+
+            # IR signature
             if issubclass(type_, ArrayType):
                 dtype = type_.dtype
                 dtype = type_to_ir_type(dtype).as_pointer()
@@ -1093,7 +1111,7 @@ class Function:
 
     def __call__(self, *args, verbose=0):
         if self.compiled is False:
-            self.compile(verbose)
+            self.compile(verbose, *args)
 
         c_args = []
         for py_arg in args:

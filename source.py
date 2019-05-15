@@ -115,3 +115,10 @@ def for_range_start_step(array: Array(float, 1)) -> float:
     for i in range(2, array.shape[0], 3):
         acc = acc + array[i]
     return acc
+
+
+def jit(array, out) -> None:
+    for i in range(array.shape[1]):
+        out[i] = 0.0
+        for j in range(array.shape[0]):
+            out[i] = out[i] + array[j,i]

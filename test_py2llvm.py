@@ -215,3 +215,17 @@ def test_calling_conventions():
 
     # Decorators
     assert f_dec(array) == f_dec_lazy(array) == f_dec_hints(array) == f_dec_hints_lazy(array)
+
+
+#
+# Type inference
+#
+
+@given(
+    arrays(float, (3,2), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
+    arrays(float, (3,), elements=floats()),
+)
+def test_jit(a, b):
+    f = source.jit
+    fc = llvm.lazy(f)
+    assert f(a, b) == fc(a, b)

@@ -2,11 +2,10 @@ import argparse
 
 import numpy as np
 import py2llvm as llvm
-from py2llvm import float64, Array
 
 
 @llvm.lazy
-def f(array: Array(float64, 2), out: Array(float64, 1)) -> None:
+def f(array, out) -> None:
     for i in range(array.shape[1]):
         out[i] = 0.0
         for j in range(array.shape[0]):
