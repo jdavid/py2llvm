@@ -178,7 +178,7 @@ def get_c_type(ir_type):
 #
 
 LEAFS = {
-    ast.Name, ast.Num,
+    ast.Name, ast.NameConstant, ast.Num,
     # boolop
     ast.And, ast.Or,
     # operator
@@ -349,6 +349,17 @@ class NodeVisitor(BaseNodeVisitor):
         """
         self.root = node
 
+    def FunctionDef_enter(self, node, parent):
+        """
+        FunctionDef(identifier name, arguments args,
+                    stmt* body, expr* decorator_list, expr? returns)
+        """
+        assert type(parent) is ast.Module, 'nested functions not implemented'
+
+        # Initialize function context
+        node.locals = {}
+        self.locals = node.locals
+
     def arguments_enter(self, node, parent):
         """
         arguments = (arg* args, arg? vararg, arg* kwonlyargs, expr* kw_defaults,
@@ -357,11 +368,47 @@ class NodeVisitor(BaseNodeVisitor):
         # We don't parse arguments because arguments are handled in compile
         return False
 
+    def Assign_enter(self, node, parent):
+        """
+        Assign(expr* targets, expr value)
+        """
+        assert len(node.targets) == 1, 'Unpacking not supported'
+
+    #
+    # Leaf nodes
+    #
+    def NameConstant_visit(self, node, parent):
+        """
+        NameConstant(singleton value)
+        """
+        return node.value
+
     def Num_visit(self, node, parent):
         """
         Num(object n)
         """
         return node.n
+
+    def expr_context_visit(self, node, parent):
+        return type(node)
+
+    def Name_visit(self, node, parent):
+        """
+        Name(identifier id, expr_context ctx)
+        """
+        name = node.id
+        ctx = type(node.ctx)
+
+        if ctx is ast.Load:
+            try:
+                return self.lookup(name)
+            except AttributeError:
+                return None
+
+        elif ctx is ast.Store:
+            return name
+
+        raise NotImplementedError(f'unexpected ctx={ctx}')
 
 
 class InferVisitor(NodeVisitor):
@@ -370,11 +417,11 @@ class InferVisitor(NodeVisitor):
     explicitely.
     """
 
-    def NameConstant_exit(self, node, parent, value):
-        """
-        NameConstant(singleton value)
-        """
-        return value
+    def Assign_exit(self, node, parent, targets, value):
+        target = targets[0]
+        if type(target) is str:
+            # x =
+            self.locals[target] = value
 
     def Return_exit(self, node, parent, value):
         return_type = type(value)
@@ -400,30 +447,6 @@ class BlockVisitor(NodeVisitor):
     - We populate the AST attaching structure IR objects (module, functions,
       blocks). These will be used in the 2nd pass.
     """
-
-    def Name_visit(self, node, parent):
-        """
-        Name(identifier id, expr_context ctx)
-        """
-        name = node.id
-        if type(node.ctx) is ast.Load:
-            try:
-                return self.lookup(name)
-            except AttributeError:
-                pass
-
-        return None
-
-    def FunctionDef_enter(self, node, parent):
-        """
-        FunctionDef(identifier name, arguments args,
-                    stmt* body, expr* decorator_list, expr? returns)
-        """
-        assert type(parent) is ast.Module, 'nested functions not implemented'
-
-        # Initialize function context
-        node.locals = {}
-        self.locals = node.locals
 
     def FunctionDef_returns(self, node, parent, returns):
         """
@@ -586,8 +609,9 @@ class GenVisitor(NodeVisitor):
                     return self.builder.load(value)
             return value
 
-        if ctx is ast.Store:
+        elif ctx is ast.Store:
             return name
+
         raise NotImplementedError(f'unexpected ctx={ctx}')
 
     def boolop_visit(self, node, parent):
@@ -616,9 +640,6 @@ class GenVisitor(NodeVisitor):
 
     def GtE_visit(self, node, parent):
         return '>='
-
-    def expr_context_visit(self, node, parent):
-        return type(node)
 
     #
     # Literals
@@ -936,12 +957,6 @@ class GenVisitor(NodeVisitor):
             self.locals[name] = ptr
 
         return self.builder.store(value, ptr)
-
-    def Assign_enter(self, node, parent):
-        """
-        Assign(expr* targets, expr value)
-        """
-        assert len(node.targets) == 1, 'Unpacking not supported'
 
     def Assign_exit(self, node, parent, targets, value):
         target = targets[0]

@@ -11,7 +11,8 @@ def f(array, out):
         for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
 
-    return 5.0
+    a = 5
+    return a
 
 
 if __name__ == '__main__':

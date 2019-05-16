@@ -229,3 +229,19 @@ def test_jit(a, b):
     f = source.jit
     fc = llvm.lazy(f)
     assert f(a, b) == fc(a, b)
+
+def test_inference():
+    names = [
+        'infer_pass',
+        'infer_return',
+        'infer_none',
+        'infer_int',
+        'infer_float',
+        'infer_name_int',
+        'infer_name_float',
+    ]
+
+    for name in names:
+        f = getattr(source, name)
+        fc = llvm.compile(f)
+        assert f() == fc()

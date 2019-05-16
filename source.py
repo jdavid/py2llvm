@@ -122,3 +122,12 @@ def jit(array, out) -> None:
         out[i] = 0.0
         for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
+
+
+def infer_pass(): pass
+def infer_return(): return
+def infer_none(): return None
+def infer_int(): return 5
+def infer_float(): return 5.0
+def infer_name_int(): a = 5; return a
+def infer_name_float(): a = 5.0; return a
