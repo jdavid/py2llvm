@@ -230,8 +230,8 @@ class BaseNodeVisitor:
         NodeVisitor().traverse(node)
     """
 
-    def __init__(self, debug):
-        self.debug = debug
+    def __init__(self, verbose):
+        self.verbose = verbose
         self.depth = 0
 
     @classmethod
@@ -291,7 +291,7 @@ class BaseNodeVisitor:
         value = cb(node, parent, *args) if cb is not None else None
 
         # Debug
-        if self.debug:
+        if self.verbose > 1:
             name = node.__class__.__name__
             line = None
             if event == 'enter':
@@ -1047,8 +1047,6 @@ class Function:
 
 
     def compile(self, verbose=0, *args):
-        debug = verbose > 1
-
         # (1) Python AST
         self.py_source = inspect.getsource(self.py_function)
         if verbose:
@@ -1061,7 +1059,7 @@ class Function:
         return_type = self.signature.return_type
         if return_type is inspect._empty:
             node.return_type = return_type
-            InferVisitor(debug).traverse(node)
+            InferVisitor(verbose).traverse(node)
             return_type = node.return_type
             self.signature.return_type = return_type
 
@@ -1119,12 +1117,12 @@ class Function:
         node.ir_signature = ir_signature
         node.ir_function = ir_function
 
-        if debug: print('====== Debug: 1st pass ======')
-        BlockVisitor(debug).traverse(node)
+        if verbose > 1: print('====== Debug: 1st pass ======')
+        BlockVisitor(verbose).traverse(node)
 
         # (7) AST pass: generate
-        if debug: print('====== Debug: 2nd pass ======')
-        GenVisitor(debug).traverse(node)
+        if verbose > 1: print('====== Debug: 2nd pass ======')
+        GenVisitor(verbose).traverse(node)
 
         # (8) IR code
         self.ir = str(ir_module)

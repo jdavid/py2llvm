@@ -16,9 +16,9 @@ def f(array, out):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('-v', '--verbose', action='count', default=0)
     args = parser.parse_args()
-    verbose = 2 if args.debug else 1
+    verbose = args.verbose
 
     # Prepare function arguments
     array = [
