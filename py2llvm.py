@@ -1147,16 +1147,16 @@ class Function:
         self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
 
         # (9) C function
-        func_ptr = self.llvm.engine.get_function_address(self.name)
+        self.cfunction_ptr = self.llvm.engine.get_function_address(self.name)
         self.c_signature = c_signature
         self.cfunctype = ctypes.CFUNCTYPE(*c_signature)
-        self.cfunction = self.cfunctype(func_ptr)
+        self.cfunction = self.cfunctype(self.cfunction_ptr)
 
         # (10) Done
         self.compiled = True
 
 
-    def __call__(self, *args, verbose=0):
+    def call_args(self, *args, verbose=0):
         if self.compiled is False:
             self.compile(verbose, *args)
 
@@ -1181,6 +1181,12 @@ class Function:
             else:
                 # Scalar
                 c_args.append(py_arg)
+
+        return tuple(c_args)
+
+
+    def __call__(self, *args, verbose=0):
+        c_args = self.call_args(*args, verbose=verbose)
 
         value = self.cfunction(*c_args)
         if verbose:

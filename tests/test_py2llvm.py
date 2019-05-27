@@ -5,7 +5,7 @@ import numpy as np
 
 from py2llvm import llvm
 from py2llvm import Array
-import source
+from . import source
 
 
 # Some constants
