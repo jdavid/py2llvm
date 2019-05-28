@@ -1162,25 +1162,11 @@ class Function:
 
         c_args = []
         for py_arg in args:
-            if isinstance(py_arg, np.ndarray):
-                # NumPy array
-                c_type = self.c_signature[1+len(c_args)]._type_
-                c_type = c_type * py_arg.size
-                arg = c_type.from_buffer(py_arg.data)
-                c_args.append(arg)
-                for n in py_arg.shape:
-                    c_args.append(n)
-            elif isinstance(py_arg, list):
-                # List
-                c_type = self.c_signature[1+len(c_args)]._type_
-                n = len(py_arg)
-                c_type = c_type * n
-                arg = c_type(*py_arg)
-                c_args.append(arg)
-                c_args.append(n)
-            else:
-                # Scalar
-                c_args.append(py_arg)
+            c_type = self.c_signature[1+len(c_args)]
+            for plugin in plugins:
+                arguments = plugin.expand_argument(py_arg, c_type)
+                if arguments is not None:
+                    c_args.extend(arguments)
 
         return tuple(c_args)
 
@@ -1300,3 +1286,11 @@ binding.initialize_native_target()
 binding.initialize_native_asmprinter()  # yes, even this one
 
 llvm = LLVM()
+
+# Plugins (entry points)
+import pkg_resources
+
+plugins = []
+for ep in pkg_resources.iter_entry_points(group='py2llvm_plugins'):
+    plugin = ep.load()
+    plugins.append(plugin)

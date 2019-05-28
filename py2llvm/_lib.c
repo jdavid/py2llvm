@@ -17,7 +17,7 @@
 
 typedef struct {
     PyObject_HEAD
-    void* array;
+    void* data;
     Py_ssize_t size;
 } Array;
 
@@ -27,7 +27,7 @@ static PyObject* Array_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     self = (Array*)type->tp_alloc(type, 0);
     if (self != NULL)
     {
-        self->array = NULL;
+        self->data = NULL;
         self->size = 0;
     }
     return (PyObject*)self;
@@ -35,7 +35,7 @@ static PyObject* Array_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 
 static void Array_dealloc(Array* self)
 {
-    free(self->array);
+    free(self->data);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -49,7 +49,7 @@ static int Array_init(Array *self, PyObject *args, PyObject *kwds)
         return -1;
 
     self->size = PyList_Size(list);
-    self->array = malloc(self->size * sizeof(double));
+    self->data = malloc(self->size * sizeof(double));
 
     for (Py_ssize_t i=0; i < self->size; i++)
     {
@@ -57,10 +57,30 @@ static int Array_init(Array *self, PyObject *args, PyObject *kwds)
         value = PyFloat_AsDouble(item);
         if (value == -1.0 && PyErr_Occurred())
             return -1;
+
+        ((double*)(self->data))[i] = value;
     }
 
     return 0;
 }
+
+static PyObject* Array_size(Array* self, void* closure)
+{
+    return PyLong_FromSsize_t(self->size);
+}
+
+
+static PyObject* Array_data(Array* self, void* closure)
+{
+    return PyMemoryView_FromMemory((char*)self->data, self->size * sizeof(double), PyBUF_WRITE);
+}
+
+
+static PyGetSetDef Array_getset[] = {
+    {"size", (getter)Array_size, NULL, "size", NULL},
+    {"data", (getter)Array_data, NULL, "data", NULL},
+    {NULL}
+};
 
 
 static PyTypeObject ArrayType = {
@@ -73,9 +93,7 @@ static PyTypeObject ArrayType = {
     .tp_new = Array_new,
     .tp_dealloc = (destructor) Array_dealloc,
     .tp_init = (initproc) Array_init,
-
-//  .tp_members = Array_members,
-//  .tp_methods = Array_methods,
+    .tp_getset = Array_getset,
 };
 
 
