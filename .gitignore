@@ -1,6 +1,7 @@
 .*.swp
+*.so
 __pycache__/
 /.hypothesis/
 /build/
-/*.so
+/dist/
 /venv/

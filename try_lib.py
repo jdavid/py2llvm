@@ -1,6 +1,5 @@
-import numpy as np
-
 from py2llvm import Array
+from py2llvm import lib
 import py2llvm as llvm
 import testa
 
@@ -15,8 +14,6 @@ def f(array: Array(float, 1)) -> float:
 if __name__ == '__main__':
     f = llvm.compile(f)
 
-    array = [1.0, 2.5, 4.3]
-    array = np.array(array, dtype=np.float64)
-
+    array = lib.Array([1.0, 2.5, 4.3])
     x = testa.run(f, array)
     print(f'= {x}')

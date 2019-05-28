@@ -1,9 +1,18 @@
-from distutils.core import setup, Extension
+from setuptools import setup, Extension
 
+
+name = 'py2llvm'
 
 setup(
-    name='testa',
+    name=name,
+    packages=[name],
+    # Requirements
+    install_requires=['llvmlite', 'numpy'],
+    extras_require={
+        'test': ['pytest', 'hypothesis'],
+    },
+    # Extensions
     ext_modules=[
-        Extension('_testa', sources = ['_testa.c']),
+        Extension('py2llvm._lib', sources = ['py2llvm/_lib.c']),
     ],
 )
