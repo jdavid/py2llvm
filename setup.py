@@ -20,6 +20,9 @@ setup(
     },
     # Extensions
     ext_modules=[
-        Extension('py2llvm._lib', sources = ['py2llvm/_lib.c']),
+        Extension('py2llvm._lib', sources=['py2llvm/_lib.c'],
+                  include_dirs=['/usr/lib64/libffi-3.2.1/include'],
+                  libraries=['ffi'],
+        ),
     ],
 )

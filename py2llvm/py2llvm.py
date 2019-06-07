@@ -1125,6 +1125,20 @@ class Function:
         )
         ir_function = ir.Function(ir_module, f_type, self.name)
 
+        # (4x) For libffi
+        self.nargs = len(params)
+        self.argtypes = [p.type for p in params]
+        self.argtypes = [
+            ('p' if x.is_pointer else x.intrinsic_name)
+            for x in self.argtypes]
+
+        if return_type is void:
+            self.rtype = ''
+        elif return_type.is_pointer:
+            self.rtype = 'p'
+        else:
+            self.rtype = return_type.intrinsic_name
+
         # (6) AST pass: structure
         node.globals = inspect.stack()[1].frame.f_globals
         node.compiled = {}
