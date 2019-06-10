@@ -19,9 +19,8 @@ def expand_argument(py_arg, c_type):
     # Numpy
     if np is not None and isinstance(py_arg, np.ndarray):
         # NumPy array
+        data = py_arg.__array_interface__['data'][0]
         size = py_arg.size
-        c_type = c_type._type_ * size
-        arg = c_type.from_buffer(py_arg.data)
-        return [arg] + [n for n in py_arg.shape]
+        return [data] + [n for n in py_arg.shape]
 
     return None

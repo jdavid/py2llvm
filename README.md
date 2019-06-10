@@ -32,8 +32,7 @@ Types. The supported types are float32 float64, int32 and int64. It's also
 possible to use Python's float and int types, they are considered aliases to
 double and int64 respectively.
 
-The compiled functions will be called using ctypes, so the allowed argument
-types are a subset of the types available in ctypes.
+The compiled functions will be called using libffi.
 
 Literals:
 
@@ -91,3 +90,7 @@ About performance:
 About libffi:
 
 - http://www.chiark.greenend.org.uk/doc/libffi-dev/html/index.html
+
+About numpy:
+
+- https://docs.scipy.org/doc/numpy/reference/arrays.interface.html

@@ -2,7 +2,6 @@
 import ast
 import builtins
 import collections
-import ctypes
 import inspect
 import operator
 import types
@@ -11,6 +10,8 @@ import typing
 from llvmlite import ir
 from llvmlite import binding
 import numpy as np
+
+from . import _lib
 
 #
 # Types and constants
@@ -155,22 +156,6 @@ def value_to_ir_value(value):
 
     ir_type = value_to_ir_type(value)
     return ir.Constant(ir_type, value)
-
-
-def get_c_type(ir_type):
-    basic_types = {
-        float32: ctypes.c_float,
-        float64: ctypes.c_double,
-        int32: ctypes.c_int32,
-        int64: ctypes.c_int64,
-        void: None,
-    }
-
-    if ir_type in basic_types:
-        return basic_types[ir_type]
-
-    assert ir_type.is_pointer
-    return ctypes.POINTER(basic_types[ir_type.pointee])
 
 
 #
@@ -1012,9 +997,9 @@ class Signature:
         self.parameters = parameters
         self.return_type = return_type
 
-class Function:
+class Function(_lib.Function):
     """
-    Wraps a Python function. Compiled to IR, it can be executed with ctypes:
+    Wraps a Python function. Compiled to IR, it will be executed with libffi:
 
     f(...)
 
@@ -1024,8 +1009,6 @@ class Function:
     py_function -- the original Python function
     py_source   -- the source code of the Python function
     ir          -- LLVM's IR code
-    cfunctype   -- the C signature, used when calling
-    cfunction   -- the C function (only this one is needed to make the call)
     """
 
     def __init__(self, llvm, py_function, signature):
@@ -1110,22 +1093,9 @@ class Function:
 
         return_type = type_to_ir_type(return_type)
         ir_signature = Signature(params, return_type)
+        self.ir_signature = ir_signature
 
-        # (4) The ctypes signature (needed to call the compiled function)
-        c_signature = []
-        c_signature.append(get_c_type(ir_signature.return_type))
-        for param in ir_signature.parameters:
-            c_signature.append(get_c_type(param.type))
-
-        # (5) The IR module and function
-        ir_module = ir.Module()
-        f_type = ir.FunctionType(
-            ir_signature.return_type,
-            tuple(type_ for name, type_ in ir_signature.parameters)
-        )
-        ir_function = ir.Function(ir_module, f_type, self.name)
-
-        # (4x) For libffi
+        # (4) For libffi
         self.nargs = len(params)
         self.argtypes = [p.type for p in params]
         self.argtypes = [
@@ -1138,6 +1108,14 @@ class Function:
             self.rtype = 'p'
         else:
             self.rtype = return_type.intrinsic_name
+
+        # (5) The IR module and function
+        ir_module = ir.Module()
+        f_type = ir.FunctionType(
+            ir_signature.return_type,
+            tuple(type_ for name, type_ in ir_signature.parameters)
+        )
+        ir_function = ir.Function(ir_module, f_type, self.name)
 
         # (6) AST pass: structure
         node.globals = inspect.stack()[1].frame.f_globals
@@ -1162,9 +1140,7 @@ class Function:
 
         # (9) C function
         self.cfunction_ptr = self.llvm.engine.get_function_address(self.name)
-        self.c_signature = c_signature
-        self.cfunctype = ctypes.CFUNCTYPE(*c_signature)
-        self.cfunction = self.cfunctype(self.cfunction_ptr)
+        self.prepare(self) # prepare libffi to call the function
 
         # (10) Done
         self.compiled = True
@@ -1176,7 +1152,7 @@ class Function:
 
         c_args = []
         for py_arg in args:
-            c_type = self.c_signature[1+len(c_args)]
+            c_type = self.ir_signature.parameters[len(c_args)].type
             for plugin in plugins:
                 arguments = plugin.expand_argument(py_arg, c_type)
                 if arguments is not None:
@@ -1188,7 +1164,7 @@ class Function:
     def __call__(self, *args, verbose=0):
         c_args = self.call_args(*args, verbose=verbose)
 
-        value = self.cfunction(*c_args)
+        value = super().__call__(c_args)
         if verbose:
             print('====== Output ======')
             print(f'args = {args}')
