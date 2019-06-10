@@ -16,13 +16,17 @@
 #include <ffi.h>
 
 
+/*
+ * Array
+ */
+
 typedef struct {
     PyObject_HEAD
     void* data;
     Py_ssize_t size;
 } Array;
 
-static PyObject* Array_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+static PyObject* Array_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
 {
     Array *self;
     self = (Array*)type->tp_alloc(type, 0);
@@ -40,7 +44,7 @@ static void Array_dealloc(Array* self)
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
-static int Array_init(Array *self, PyObject *args, PyObject *kwds)
+static int Array_init(Array *self, PyObject *args, PyObject *kwargs)
 {
     PyObject* list = NULL;
     PyObject* item = NULL;
@@ -103,6 +107,34 @@ static PyTypeObject ArrayType = {
 };
 
 
+/*
+ * Function
+ */
+
+typedef struct {
+    PyObject_HEAD
+    ffi_cif cif; // libffi function definition
+    void* fn; // pointer to function
+    ffi_type** arg_types; // have to alloc this
+} Function;
+
+static PyObject* Function_new(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+{
+    Function *self;
+    self = (Function*)type->tp_alloc(type, 0);
+    if (self != NULL)
+    {
+        self->arg_types = NULL;
+    }
+    return (PyObject*)self;
+}
+
+static void Function_dealloc(Function* self)
+{
+    free(self->arg_types);
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
 ffi_type* get_ffi_type(PyObject* object)
 {
    if (object == NULL)
@@ -125,92 +157,95 @@ ffi_type* get_ffi_type(PyObject* object)
    return NULL;
 }
 
-PyObject* run(PyObject* self, PyObject* args)
+
+static int Function_init(Function *self, PyObject *args, PyObject *kwargs)
 {
     PyObject* function;
-    PyObject* arguments;
     PyObject* object;
-    PyObject* res = NULL;
-
-    if (!PyArg_ParseTuple(args, "OO!", &function, &PyTuple_Type, &arguments))
-    {
-        return NULL;
-    }
-
-    // libffi: prepare ffi_cif object
-    ffi_cif cif;
     ffi_status status;
     ffi_abi abi = FFI_DEFAULT_ABI;
 
-    // number of arguments
-    unsigned long nargs;
-    if ((object = PyObject_GetAttrString(function, "nargs")) == NULL)
-        return NULL;
+    if (!PyArg_ParseTuple(args, "O", &function))
+        return -1;
 
-    nargs = PyLong_AsUnsignedLong(object);
+    // number of arguments
+    if ((object = PyObject_GetAttrString(function, "nargs")) == NULL)
+        return -1;
+
+    unsigned long nargs = PyLong_AsUnsignedLong(object);
     Py_DECREF(object);
-    if (nargs == -1 && PyErr_Occurred()) { return NULL; }
+    if (nargs == -1 && PyErr_Occurred())
+        return -1;
 
     // argument types
     if ((object = PyObject_GetAttrString(function, "argtypes")) == NULL)
-        return NULL;
+        return -1;
 
-    ffi_type* argtypes[nargs];
+    self->arg_types = malloc(nargs * sizeof(ffi_type*));
     for (unsigned long i=0; i < nargs; i++)
     {
-        argtypes[i] = get_ffi_type(PyList_GetItem(object, (Py_ssize_t)i));
-        if (argtypes[i] == NULL)
-        {
-            return NULL;
-        }
+        self->arg_types[i] = get_ffi_type(PyList_GetItem(object, (Py_ssize_t)i));
+        if (self->arg_types[i] == NULL)
+            return -1;
     }
     Py_DECREF(object);
 
     // return type
     if ((object = PyObject_GetAttrString(function, "rtype")) == NULL)
-        return NULL;
+        return -1;
 
     ffi_type* rtype = get_ffi_type(object);
     Py_DECREF(object);
 
     // prepare
-    status = ffi_prep_cif(&cif, abi, (unsigned int) nargs, rtype, argtypes);
+    status = ffi_prep_cif(&self->cif, abi, (unsigned int)nargs, rtype, self->arg_types);
     if (status != FFI_OK)
     {
         PyErr_Format(PyExc_RuntimeError, "ffi_prep_cif returned %d", status);
-        return NULL;
+        return -1;
     }
 
-    // libffi: call
     // function address
     if ((object = PyObject_GetAttrString(function, "cfunction_ptr")) == NULL)
+        return -1;
+
+    self->fn = PyLong_AsVoidPtr(object);
+    Py_DECREF(object);
+    if (self->fn == NULL && PyErr_Occurred())
+        return -1;
+
+    return 0;
+}
+
+
+PyObject* Function_call(PyObject *obj, PyObject *args, PyObject *kwargs)
+{
+    PyObject* arguments;
+    PyObject* object;
+
+    Function* self = (Function*)obj;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyTuple_Type, &arguments))
         return NULL;
 
-    void* fn = PyLong_AsVoidPtr(object);
-    Py_DECREF(object);
-    if (fn == NULL && PyErr_Occurred()) { return NULL; }  // Error check
-
-    // return value
-    void* rvalue = malloc(rtype->size);
-
     // arguments
-    void* avalues[nargs];
-    for (unsigned long i=0; i < nargs; i++)
+    void* avalues[self->cif.nargs];
+    for (unsigned long i=0; i < self->cif.nargs; i++)
     {
         object = PyTuple_GetItem(arguments, (Py_ssize_t)i);
-        if (argtypes[i] == &ffi_type_pointer)
+        if (self->cif.arg_types[i] == &ffi_type_pointer)
         {
            void* ptr = PyLong_AsVoidPtr(object);
            if (ptr == NULL && PyErr_Occurred()) { }
            avalues[i] = &ptr;
         }
-        else if (argtypes[i] == &ffi_type_sint64)
+        else if (self->cif.arg_types[i] == &ffi_type_sint64)
         {
            long volatile value = PyLong_AsLong(object);
            if (value == -1 && PyErr_Occurred()) { }
            avalues[i] = (void*)&value;
         }
-        else if (argtypes[i] == &ffi_type_double)
+        else if (self->cif.arg_types[i] == &ffi_type_double)
         {
            double volatile value = PyFloat_AsDouble(object);
            if (value == -1.0 && PyErr_Occurred()) { }
@@ -218,25 +253,42 @@ PyObject* run(PyObject* self, PyObject* args)
         }
     }
 
-    ffi_call(&cif, fn, rvalue, avalues);
+    // call
+    void* rvalue = malloc(self->cif.rtype->size);
+    ffi_call(&self->cif, self->fn, rvalue, avalues);
 
-    if (rtype == &ffi_type_double)
+    // return value
+    PyObject* res = NULL;
+    if (self->cif.rtype == &ffi_type_double)
     {
        res = PyFloat_FromDouble(*(double*)rvalue);
     }
 
-    // Free
     free(rvalue);
 
     // Ok
     return res;
 }
 
-PyMethodDef m_methods[] = {
-    {"run", run, METH_VARARGS, ""},
-    {NULL}
+
+static PyTypeObject FunctionType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "_lib.Function",
+    .tp_doc = "",
+    .tp_basicsize = sizeof(Function),
+    .tp_itemsize = 0,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_new = Function_new,
+    .tp_dealloc = (destructor) Function_dealloc,
+    .tp_init = (initproc) Function_init,
+    .tp_call = (ternaryfunc) Function_call,
 };
 
+
+
+/*
+ * Module
+ */
 
 // Module Definition struct
 static PyModuleDef moduledef = {
@@ -244,7 +296,6 @@ static PyModuleDef moduledef = {
     .m_name = "_lib",
     .m_doc = "",
     .m_size = -1,
-    .m_methods = m_methods,
 };
 
 // Initializes our module using our above struct
@@ -253,12 +304,18 @@ PyMODINIT_FUNC PyInit__lib(void)
     if (PyType_Ready(&ArrayType) < 0)
         return NULL;
 
+    if (PyType_Ready(&FunctionType) < 0)
+        return NULL;
+
     PyObject* module = PyModule_Create(&moduledef);
     if (module == NULL)
         return NULL;
 
     Py_INCREF(&ArrayType);
     PyModule_AddObject(module, "Array", (PyObject*)&ArrayType);
+
+    Py_INCREF(&FunctionType);
+    PyModule_AddObject(module, "Function", (PyObject*)&FunctionType);
 
     return module;
 }

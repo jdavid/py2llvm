@@ -87,3 +87,7 @@ About LLVM:
 About performance:
 
 - https://llvm.org/docs/Frontend/PerformanceTips.html
+
+About libffi:
+
+- http://www.chiark.greenend.org.uk/doc/libffi-dev/html/index.html
