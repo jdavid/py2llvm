@@ -14,6 +14,7 @@
 
 #include <Python.h>
 #include <ffi.h>
+#include <alloca.h>
 
 
 /*
@@ -240,26 +241,24 @@ PyObject* Function_call(PyObject *obj, PyObject *args, PyObject *kwargs)
     void* avalues[self->cif.nargs];
     for (unsigned long i=0; i < self->cif.nargs; i++)
     {
+        avalues[i] = alloca(self->cif.arg_types[i]->size);
         object = PyTuple_GetItem(arguments, (Py_ssize_t)i);
         if (self->cif.arg_types[i] == &ffi_type_pointer)
         {
            void* ptr = PyLong_AsVoidPtr(object);
            if (ptr == NULL && PyErr_Occurred()) { }
-           avalues[i] = malloc(sizeof(void*));
            *(void**)(avalues[i]) = ptr;
         }
         else if (self->cif.arg_types[i] == &ffi_type_sint64)
         {
            long value = PyLong_AsLong(object);
            if (value == -1 && PyErr_Occurred()) { }
-           avalues[i] = malloc(sizeof(long));
            *(long*)(avalues[i]) = value;
         }
         else if (self->cif.arg_types[i] == &ffi_type_double)
         {
            double value = PyFloat_AsDouble(object);
            if (value == -1.0 && PyErr_Occurred()) { }
-           avalues[i] = malloc(sizeof(double));
            *(double*)(avalues[i]) = value;
         }
     }
@@ -267,12 +266,9 @@ PyObject* Function_call(PyObject *obj, PyObject *args, PyObject *kwargs)
     // call
     void* rvalue = NULL;
     if (self->cif.rtype != &ffi_type_void)
-        rvalue = malloc(self->cif.rtype->size);
+        rvalue = alloca(self->cif.rtype->size);
 
     ffi_call(&self->cif, self->fn, rvalue, avalues);
-
-    for (unsigned long i=0; i < self->cif.nargs; i++)
-        free(avalues[i]);
 
     // return value
     PyObject* res = NULL;
@@ -293,8 +289,6 @@ PyObject* Function_call(PyObject *obj, PyObject *args, PyObject *kwargs)
     {
         PyErr_SetString(PyExc_RuntimeError, "unexpected return type");
     }
-
-    free(rvalue);
 
     // Ok
     return res;
