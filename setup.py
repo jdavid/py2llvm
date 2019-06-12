@@ -1,7 +1,20 @@
+import subprocess
+
 from setuptools import setup, Extension
 
 
 name = 'py2llvm'
+
+def ext_modules():
+    cmd = ["pkg-config", "--variable=includedir", "libffi"]
+    include_dir = subprocess.run(cmd, stdout=subprocess.PIPE).stdout.strip()
+    include_dirs = [include_dir.decode()]
+
+    return [
+        Extension('py2llvm._lib', sources=['py2llvm/_lib.c'],
+                  include_dirs=include_dirs, libraries=['ffi'],
+        ),
+    ]
 
 setup(
     name=name,
@@ -19,10 +32,5 @@ setup(
         ],
     },
     # Extensions
-    ext_modules=[
-        Extension('py2llvm._lib', sources=['py2llvm/_lib.c'],
-                  include_dirs=['/usr/lib64/libffi-3.2.1/include'],
-                  libraries=['ffi'],
-        ),
-    ],
+    ext_modules=ext_modules(),
 )
