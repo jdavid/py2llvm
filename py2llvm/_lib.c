@@ -15,6 +15,18 @@
 #include <Python.h>
 #include <ffi.h>
 #include <alloca.h>
+#include <math.h>
+
+
+/*
+ * C functions, to be called from LLVM, for testing purposes.
+ */
+
+double fun(double x)
+{
+    //printf("I'm funny\n");
+    return sin(x);
+}
 
 
 /*

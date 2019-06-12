@@ -6,13 +6,8 @@ import py2llvm as llvm
 
 @llvm.lazy
 def f(array, out):
-    for i in range(array.shape[1]):
-        out[i] = 0.0
-        for j in range(array.shape[0]):
-            out[i] = out[i] + array[j,i]
-
-    a = 5
-    return a
+    for i in range(array.shape[0]):
+        out[i] = np.sin(array[i])
 
 
 if __name__ == '__main__':
@@ -22,13 +17,15 @@ if __name__ == '__main__':
     verbose = args.verbose
 
     # Prepare function arguments
-    array = [
-        [1.0, 2.5, 4.3],
-        [0.5, 2.0, 4.2],
-    ]
+    array = [1.0, 2.5, 4.3]
     array = np.array(array, dtype=np.float64)
     out = np.empty((3,), dtype=np.float64)
 
     # Call (calls compile implicitly)
+    print('>', array)
+
+    f.py_function(array, out)
+    print('=', out)
+
     f(array, out, verbose=verbose)
-    print(out)
+    print('=', out)

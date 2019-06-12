@@ -987,6 +987,7 @@ class GenVisitor(NodeVisitor):
         if func is range:
             return Range(*args)
 
+        func = self.root.compiled.get(func, func)
         return self.builder.call(func, args)
 
 
@@ -1110,7 +1111,13 @@ class Function(_lib.Function):
             self.rtype = return_type.intrinsic_name
 
         # (5) The IR module and function
+        node.compiled = {}
         ir_module = ir.Module()
+        for plugin in plugins:
+            load_functions = getattr(plugin, 'load_functions', None)
+            if load_functions is not None:
+                node.compiled.update(load_functions(ir_module))
+
         f_type = ir.FunctionType(
             ir_signature.return_type,
             tuple(type_ for name, type_ in ir_signature.parameters)
@@ -1119,7 +1126,6 @@ class Function(_lib.Function):
 
         # (6) AST pass: structure
         node.globals = inspect.stack()[1].frame.f_globals
-        node.compiled = {}
         node.py_signature = self.signature
         node.ir_signature = ir_signature
         node.ir_function = ir_function
