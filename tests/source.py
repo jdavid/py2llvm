@@ -117,11 +117,15 @@ def for_range_start_step(array: Array(float, 1)) -> float:
     return acc
 
 
-def jit(array, out) -> None:
+def jit(array, out):
+    acc = 0.0
     for i in range(array.shape[1]):
         out[i] = 0.0
         for j in range(array.shape[0]):
             out[i] = out[i] + array[j,i]
+            acc = acc + array[j,i]
+
+    return acc
 
 
 def infer_pass(): pass

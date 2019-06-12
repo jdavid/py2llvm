@@ -406,7 +406,7 @@ class InferVisitor(NodeVisitor):
         target = targets[0]
         if type(target) is str:
             # x =
-            self.locals[target] = value
+            self.locals.setdefault(target, value)
 
     def Return_exit(self, node, parent, value):
         return_type = type(value)
@@ -571,7 +571,7 @@ class GenVisitor(NodeVisitor):
             # To or from float
             conversion = conversions.get((type(value.type), type(type_)))
             if conversion is None:
-                err = f'Conversion from {value.type} to {type_} not suppoerted'
+                err = f'Conversion from {value.type} to {type_} not supported'
                 raise NotImplementedError(err)
 
         return conversion(value, type_)

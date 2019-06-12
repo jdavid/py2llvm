@@ -4,40 +4,38 @@ This program translates a small subset of Python to LLVM IR.
 
 Example:
 
-    from typing import List
+    import numpy as np
     import py2llvm as llvm
 
-    def f(array, n):
+    @llvm.lazy
+    def f(array):
         acc = 0.0
-        i = 0
-        while i < n:
+        for i in range(array.shape[0]):
             acc = acc + array[i]
-            i = i + 1
 
         return acc
 
-    signature = List[llvm.float64], llvm.int32, llvm.float64
-    f = llvm.compile(f, signature)
-    f(3, [1.0, 2.5, 4.3])
+    array = [1.0, 2.5, 4.3]
+    array = np.array(array, dtype=np.float64)
+    print(f(array))
 
-Notes:
-
-- Only a very small subset is implemented.
-- Only integers and floats are supported.
-- Integers are translated to 64 bit integers in LLVM, and floats are translated
-  to 64 bit doubles in LLVM.
-- Function arguments and return values *must* be typed (type hints).
-
-Types. The supported types are float32 float64, int32 and int64. It's also
-possible to use Python's float and int types, they are considered aliases to
-double and int64 respectively.
+Only a very small subset of Python is supported: i.e. use Numba instead. Maybe
+the main technical difference with Numba is that Numba translates to LLVM from
+Python bytecode, while here I use the AST.
 
 The compiled functions will be called using libffi.
 
-Literals:
+Signature. The function signature can be explicitely given, or will be defined
+with the first call to the function. If the return type is not specified it
+will be inferred (following some very simple rules.
 
-- The "2" literal is a 64 bits integer, the "2.0" literal is a double.
-- No other literal is allowed (None, etc.)
+Types. The supported types are float32 float64, int32, int64 and numpy arrays
+(or any array providing the \_\_array\_interface\_\_).  It's also possible to
+use Python's float and int types, they are considered aliases to float64 and
+int64 respectively.
+
+Literals. The `2` literal is a 64 bits integer, the `2.0` literal is a double.
+No other literal is allowed (None, etc.)
 
 Type conversion:
 
@@ -46,17 +44,16 @@ Type conversion:
 - Type conversion can be explicit in an assignment, using type hints, e.g.
   "a: int = 2.0" the float literal will be converted to an integer.
 
+The return value:
+
+- The return value is converted as well, e.g. if the function is declared to
+  return a float then in "return 2" the literal integer value will be converted
+  to float.
+
 Local variables:
 
 - It's not possible to reuse the name of the same local variable for 2
   different types. For instance "a = 2; a = 2.0" is forbidden.
-
-The return value:
-
-- The functions *must* always return a value.
-- The return value is converted as well, e.g. if the function is declared to
-  return a float then in "return 2" the literal integer value will be converted
-  to float.
 
 LLVM is Static-Single-Assignment (SSA). There're 2 approaches to handle local
 variables:
@@ -66,11 +63,11 @@ variables:
 
 We use the second solution (because it's simpler and the generated code looks
 closer to the input Python source, so it's simpler to visually verify its
-correctness). Then we run the "memory to register promotion" of the optimizer
-(TODO).
+correctness). Then the code is optimized, so memory is promoted to registers.
 
-The algorithm makes 2 passes to the AST. In the first pass the IR code blocks
-are created, in the second pass the code is generated.
+The algorithm makes 3 passes to the AST: in the first pass the return type is
+inferred; in the second pass the IR code blocks are created; in the third pass
+the code is generated.
 
 Useful links:
 

@@ -223,12 +223,15 @@ def test_calling_conventions():
 
 @given(
     arrays(float, (3,2), elements=floats(allow_nan=False, allow_infinity=False, width=32)),
-    arrays(float, (3,), elements=floats()),
 )
-def test_jit(a, b):
+def test_jit(a):
     f = source.jit
     fc = llvm.lazy(f)
-    assert f(a, b) == fc(a, b)
+
+    b = np.zeros((3,), dtype=np.float64)
+    c = np.zeros((3,), dtype=np.float64)
+    assert f(a, b) == fc(a, c)
+    assert np.array_equal(b, c)
 
 def test_inference():
     names = [

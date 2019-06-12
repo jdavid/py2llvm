@@ -14,5 +14,5 @@ if __name__ == '__main__':
     f = llvm.compile(f)
 
     array = lib.Array([1.0, 2.5, 4.3])
-    x = lib.run(f, array)
+    x = f(array)
     print(f'= {x}')
