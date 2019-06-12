@@ -141,7 +141,7 @@ ffi_type* get_ffi_type(PyObject* object)
    if (object == NULL)
        return NULL;
 
-   char* argtype = PyUnicode_AsUTF8(object);
+   const char* argtype = PyUnicode_AsUTF8(object);
    if (argtype == NULL)
        return NULL;
 
@@ -174,7 +174,7 @@ static PyObject* Function_prepare(Function* self, PyObject* function)
 
     unsigned long nargs = PyLong_AsUnsignedLong(object);
     Py_DECREF(object);
-    if (nargs == -1 && PyErr_Occurred())
+    if (nargs == (unsigned long)-1 && PyErr_Occurred())
         return NULL;
 
     // argument types
