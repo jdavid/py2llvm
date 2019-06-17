@@ -4,7 +4,7 @@ import numpy as np
 import py2llvm as llvm
 
 
-@llvm.lazy
+@llvm.jit
 def f(array, out, n):
     for i in range(array.shape[0]):
         out[i] = np.sin(array[i]) * n

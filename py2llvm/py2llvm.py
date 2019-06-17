@@ -1031,6 +1031,16 @@ class Function(_lib.Function):
 
         return Signature(params, return_type)
 
+    def can_be_compiled(self):
+        """
+        Return whether we have the argument types, so we can compile the
+        function.
+        """
+        for name, type_ in self.signature.parameters:
+            if type_ is inspect._empty:
+                return False
+
+        return True
 
     def compile(self, verbose=0, *args):
         # (1) Python AST
@@ -1169,28 +1179,19 @@ class LLVM:
     def __init__(self):
         self.engine = self.create_execution_engine()
 
-    def lazy(self, py_function, signature=None):
+    def jit(self, py_function, signature=None, verbose=0):
         if type(py_function) is FunctionType:
-            return Function(self, py_function, signature)
+            function = Function(self, py_function, signature)
+            if function.can_be_compiled():
+                function.compile(verbose)
+            return function
 
         # Called as a decorator
         signature = py_function
         def wrapper(py_function):
-            return Function(self, py_function, signature)
-
-        return wrapper
-
-    def compile(self, py_function, signature=None, verbose=0):
-        if type(py_function) is FunctionType:
-            function = self.lazy(py_function, signature)
-            function.compile(verbose)
-            return function
-
-        # Called as a decorator with parameters
-        signature = py_function
-        def wrapper(py_function):
-            function = self.lazy(py_function, signature)
-            function.compile(verbose)
+            function = Function(self, py_function, signature)
+            if function.can_be_compiled():
+                function.compile(verbose)
             return function
 
         return wrapper
