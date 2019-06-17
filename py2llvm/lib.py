@@ -1,7 +1,7 @@
 from llvmlite import binding, ir
 import numpy as np
-from py2llvm import _lib
-from .py2llvm import float64
+
+from py2llvm import _lib, types
 
 
 Array = _lib.Array
@@ -18,7 +18,7 @@ def expand_argument(py_arg, c_type):
 
 
 def load_functions(module):
-    sin_ft = ir.FunctionType(float64, (float64,))
+    sin_ft = ir.FunctionType(types.float64, (types.float64,))
     return {
         np.sin: ir.Function(module, sin_ft, name="fun"),
     }

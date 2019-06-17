@@ -5,9 +5,9 @@ import py2llvm as llvm
 
 
 @llvm.lazy
-def f(array, out):
+def f(array, out, n):
     for i in range(array.shape[0]):
-        out[i] = np.sin(array[i])
+        out[i] = np.sin(array[i]) * n
 
 
 if __name__ == '__main__':
@@ -24,8 +24,8 @@ if __name__ == '__main__':
     # Call (calls compile implicitly)
     print('>', array)
 
-    f.py_function(array, out)
+    f.py_function(array, out, 2)
     print('=', out)
 
-    f(array, out, verbose=verbose)
+    f(array, out, 2, verbose=verbose)
     print('=', out)

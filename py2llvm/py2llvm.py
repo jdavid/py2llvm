@@ -4,7 +4,7 @@ import builtins
 import collections
 import inspect
 import operator
-import types
+from types import FunctionType
 import typing
 
 from llvmlite import ir
@@ -12,19 +12,14 @@ from llvmlite import binding
 import numpy as np
 
 from . import _lib
+from . import types
 
 #
 # Types and constants
 #
 
-void = ir.VoidType()
-float32 = ir.FloatType()
-float64 = ir.DoubleType()
-int32 = ir.IntType(32)
-int64 = ir.IntType(64)
-
-zero = ir.Constant(int64, 0)
-one = ir.Constant(int64, 1)
+zero = ir.Constant(types.int64, 0)
+one = ir.Constant(types.int64, 1)
 
 
 class ArrayShape:
@@ -85,22 +80,11 @@ def type_to_ir_type(type_):
     # None is a special case
     # https://docs.python.org/3/library/typing.html#type-aliases
     if type_ is None:
-        type_ = type(None)
+        return types.void
 
     # Basic types
-    basic_types = {
-        float: float64,
-        int: int64,
-        type(None): void,
-        # Numpy
-        np.float32: float32,
-        np.float64: float64,
-        np.int32: int32,
-        np.int32: int64,
-    }
-    ir_type = basic_types.get(type_)
-    if ir_type is not None:
-        return ir_type
+    if type_ in types.types:
+        return types.types[type_]
 
     raise ValueError(f'unexpected {type_}')
 
@@ -109,6 +93,9 @@ def value_to_ir_type(value):
     """
     Given a Python or IR value, return it's IR type.
     """
+    if isinstance(value, np.ndarray):
+        return Array(value.dtype.type, value.ndim)
+
     type_ = value_to_type(value)
     return type_to_ir_type(type_)
 
@@ -134,16 +121,16 @@ def values_to_type(left, right):
     ltype = type_to_ir_type(ltype)
     rtype = type_to_ir_type(ltype)
 
-    if ltype is float64 or rtype is float64:
-        return float64
+    if ltype is types.float64 or rtype is types.float64:
+        return types.float64
 
-    if ltype is float32 or rtype is float32:
-        return float32
+    if ltype is types.float32 or rtype is types.float32:
+        return types.float32
 
-    if ltype is int64 or rtype is int64:
-        return int64
+    if ltype is types.int64 or rtype is types.int64:
+        return types.int64
 
-    return int32
+    return types.int32
 
 
 def value_to_ir_value(value):
@@ -463,7 +450,7 @@ class BlockVisitor(NodeVisitor):
 
         # Keep an ArrayType instance, actually, so we can resolve .shape[idx]
         for param in root.py_signature.parameters:
-            if issubclass(param.type, ArrayType):
+            if type(param.type) is type and issubclass(param.type, ArrayType):
                 ptr = node.locals[param.name]
                 node.locals[param.name] = param.type(param.name, ptr)
 
@@ -856,7 +843,7 @@ class GenVisitor(NodeVisitor):
             name = target
         else:
             start = zero
-            stop = ir.Constant(int64, expr.type.count)
+            stop = ir.Constant(types.int64, expr.type.count)
             node.step = one
             name = 'i'
             # Allocate and store the literal array to iterate
@@ -864,7 +851,7 @@ class GenVisitor(NodeVisitor):
             self.builder.store(expr, arr)
 
         # Allocate and initialize the index variable
-        node.i = self.builder.alloca(int64, name=name)
+        node.i = self.builder.alloca(types.int64, name=name)
         self.builder.store(start, node.i)                         # i = start
         self.builder.branch(node.block_for)                       # br %for
 
@@ -972,7 +959,7 @@ class GenVisitor(NodeVisitor):
         Return(expr? value)
         """
         if value is None:
-            assert self.f_rtype is void
+            assert self.f_rtype is types.void
             return self.builder.ret_void()
 
         value = self.convert(value, self.f_rtype)
@@ -1013,7 +1000,7 @@ class Function(_lib.Function):
     """
 
     def __init__(self, llvm, py_function, signature):
-        assert type(py_function) is types.FunctionType
+        assert type(py_function) is FunctionType
         self.llvm = llvm
         self.py_function = py_function
         self.name = py_function.__name__
@@ -1070,24 +1057,21 @@ class Function(_lib.Function):
             arg = args[i] if i < nargs else None
             if type_ is inspect._empty:
                 assert arg is not None
-                if isinstance(arg, np.ndarray):
-                    type_ = Array(arg.dtype.type, arg.ndim)
-                else:
-                    raise NotImplementedError(f'unexpected {arg}')
+                type_ = value_to_ir_type(arg)
                 self.signature.parameters[i] = Parameter(name, type_)
 
             # IR signature
-            if issubclass(type_, ArrayType):
+            if type(type_) is type and issubclass(type_, ArrayType):
                 dtype = type_.dtype
                 dtype = type_to_ir_type(dtype).as_pointer()
                 params.append(Parameter(name, dtype))
                 for n in range(type_.ndim):
-                    params.append(Parameter(f'{name}_{n}', int64))
+                    params.append(Parameter(f'{name}_{n}', types.int64))
             elif getattr(type_, '__origin__', None) is typing.List:
                 dtype = type_.__args__[0]
                 dtype = type_to_ir_type(dtype).as_pointer()
                 params.append(Parameter(name, dtype))
-                params.append(Parameter(f'{name}_0', int64))
+                params.append(Parameter(f'{name}_0', types.int64))
             else:
                 dtype = type_to_ir_type(type_)
                 params.append(Parameter(name, dtype))
@@ -1103,7 +1087,7 @@ class Function(_lib.Function):
             ('p' if x.is_pointer else x.intrinsic_name)
             for x in self.argtypes]
 
-        if return_type is void:
+        if return_type is types.void:
             self.rtype = ''
         elif return_type.is_pointer:
             self.rtype = 'p'
@@ -1186,7 +1170,7 @@ class LLVM:
         self.engine = self.create_execution_engine()
 
     def lazy(self, py_function, signature=None):
-        if type(py_function) is types.FunctionType:
+        if type(py_function) is FunctionType:
             return Function(self, py_function, signature)
 
         # Called as a decorator
@@ -1197,7 +1181,7 @@ class LLVM:
         return wrapper
 
     def compile(self, py_function, signature=None, verbose=0):
-        if type(py_function) is types.FunctionType:
+        if type(py_function) is FunctionType:
             function = self.lazy(py_function, signature)
             function.compile(verbose)
             return function
