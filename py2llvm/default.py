@@ -1,3 +1,6 @@
+import ctypes
+
+
 def expand_argument(py_arg, c_type):
     # Scalar
     if isinstance(py_arg, (int, float)):
@@ -10,5 +13,10 @@ def expand_argument(py_arg, c_type):
         data = array_interface['data'][0]
         shape = array_interface['shape']
         return [data] + [n for n in shape]
+
+    # Struct
+    if isinstance(py_arg, ctypes.Structure):
+        address = ctypes.addressof(py_arg)
+        return [address]
 
     return None

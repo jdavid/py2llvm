@@ -1,31 +1,46 @@
 import argparse
+import ctypes
 
-import numpy as np
+#import numpy as np
 import py2llvm as llvm
+from py2llvm import Struct
 
 
-@llvm.jit
-def f(array, out, n):
-    for i in range(array.shape[0]):
-        out[i] = np.sin(array[i]) * n
+parser = argparse.ArgumentParser()
+parser.add_argument('-v', '--verbose', action='count', default=0)
+args = parser.parse_args()
+verbose = args.verbose
+
+
+@llvm.jit(verbose=verbose)
+def f(x: Struct('point', x=int, y=int)) -> int:
+    return x.x * x.y
+
+
+#@llvm.jit(verbose=verbose)
+#def f(array, out, n):
+#    for i in range(array.shape[0]):
+#        out[i] = np.sin(array[i]) * n
+
+
+class Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-v', '--verbose', action='count', default=0)
-    args = parser.parse_args()
-    verbose = args.verbose
+    out = f(Point(5, 3))
+    print(out)
 
-    # Prepare function arguments
-    array = [1.0, 2.5, 4.3]
-    array = np.array(array, dtype=np.float64)
-    out = np.empty((3,), dtype=np.float64)
+#  # Prepare function arguments
+#  array = [1.0, 2.5, 4.3]
+#  array = np.array(array, dtype=np.float64)
+#  out = np.empty((3,), dtype=np.float64)
 
-    # Call (calls compile implicitly)
-    print('>', array)
+#  # Call (calls compile implicitly)
+#  print('>', array)
 
-    f.py_function(array, out, 2)
-    print('=', out)
+#  f.py_function(array, out, 2)
+#  print('=', out)
 
-    f(array, out, 2, verbose=verbose)
-    print('=', out)
+#  f(array, out, 2, verbose=verbose)
+#  print('=', out)

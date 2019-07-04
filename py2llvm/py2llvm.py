@@ -20,24 +20,7 @@ from . import types
 
 zero = ir.Constant(types.int64, 0)
 one = ir.Constant(types.int64, 1)
-
-
-class ArrayShape:
-    def __init__(self, name):
-        self.name = name
-
-class ArrayType:
-    def __init__(self, name, ptr):
-        self.name = name
-        self.ptr = ptr
-
-    @property
-    def shape(self):
-        return ArrayShape(self.name)
-
-
-def Array(dtype, ndim):
-    return type(f'Array[{dtype}, {ndim}]', (ArrayType,), dict(dtype=dtype, ndim=ndim))
+zero32 = ir.Constant(types.int32, 0)
 
 
 class Range:
@@ -70,34 +53,15 @@ def value_to_type(value):
     return value.type if isinstance(value, ir.Value) else type(value)
 
 
-def type_to_ir_type(type_):
-    """
-    Given a Python or IR type, return the corresponding IR type.
-    """
-    if isinstance(type_, ir.Type):
-        return type_
-
-    # None is a special case
-    # https://docs.python.org/3/library/typing.html#type-aliases
-    if type_ is None:
-        return types.void
-
-    # Basic types
-    if type_ in types.types:
-        return types.types[type_]
-
-    raise ValueError(f'unexpected {type_}')
-
-
 def value_to_ir_type(value):
     """
     Given a Python or IR value, return it's IR type.
     """
     if isinstance(value, np.ndarray):
-        return Array(value.dtype.type, value.ndim)
+        return types.Array(value.dtype.type, value.ndim)
 
     type_ = value_to_type(value)
-    return type_to_ir_type(type_)
+    return types.type_to_ir_type(type_)
 
 
 def values_to_type(left, right):
@@ -118,8 +82,8 @@ def values_to_type(left, right):
         return int
 
     # At least 1 is IR
-    ltype = type_to_ir_type(ltype)
-    rtype = type_to_ir_type(ltype)
+    ltype = types.type_to_ir_type(ltype)
+    rtype = types.type_to_ir_type(ltype)
 
     if ltype is types.float64 or rtype is types.float64:
         return types.float64
@@ -450,7 +414,10 @@ class BlockVisitor(NodeVisitor):
 
         # Keep an ArrayType instance, actually, so we can resolve .shape[idx]
         for param in root.py_signature.parameters:
-            if type(param.type) is type and issubclass(param.type, ArrayType):
+            if type(param.type) is type and issubclass(param.type, types.ArrayType):
+                ptr = node.locals[param.name]
+                node.locals[param.name] = param.type(param.name, ptr)
+            elif type(param.type) is type and issubclass(param.type, types.StructType):
                 ptr = node.locals[param.name]
                 node.locals[param.name] = param.type(param.name, ptr)
 
@@ -630,7 +597,7 @@ class GenVisitor(NodeVisitor):
         else:
             raise TypeError('all list elements must be of the same type')
 
-        el_type = type_to_ir_type(py_type)
+        el_type = types.type_to_ir_type(py_type)
         typ = ir.ArrayType(el_type, len(elts))
         return ir.Constant(typ, elts)
 
@@ -765,7 +732,7 @@ class GenVisitor(NodeVisitor):
         """
         Subscript(expr value, slice slice, expr_context ctx)
         """
-        if isinstance(value, ArrayShape):
+        if isinstance(value, types.ArrayShape):
             value = self.lookup(f'{value.name}_{slice}')
             return self.builder.load(value)
 
@@ -774,7 +741,7 @@ class GenVisitor(NodeVisitor):
             slice = [slice]
 
         # Get the pointer to the beginning
-        if isinstance(value, ArrayType):
+        if isinstance(value, types.ArrayType):
             ptr = self.builder.load(value.ptr)
 
         assert ptr.type.is_pointer
@@ -902,6 +869,15 @@ class GenVisitor(NodeVisitor):
         Attribute(expr value, identifier attr, expr_context ctx)
         """
         assert ctx is ast.Load
+
+        # Support for structs
+        if isinstance(value, types.StructType):
+            idx = getattr(value, attr)
+            idx = ir.Constant(types.int32, idx)
+            ptr = self.builder.load(value.ptr)
+            ptr = self.builder.gep(ptr, [zero32, idx])
+            return self.builder.load(ptr)
+
         return getattr(value, attr)
 
     def AnnAssign_annotation(self, node, parent, value):
@@ -914,7 +890,7 @@ class GenVisitor(NodeVisitor):
         assert value is not None
         assert simple == 1
 
-        ltype = type_to_ir_type(self.ltype)
+        ltype = types.type_to_ir_type(self.ltype)
         value = self.convert(value, ltype)
         self.ltype = None
 
@@ -1060,6 +1036,7 @@ class Function(_lib.Function):
             self.signature.return_type = return_type
 
         # (3) The IR signature
+        ir_module = ir.Module()
         nargs = len(args)
         params = []
         for i, (name, type_) in enumerate(self.signature.parameters):
@@ -1071,22 +1048,27 @@ class Function(_lib.Function):
                 self.signature.parameters[i] = Parameter(name, type_)
 
             # IR signature
-            if type(type_) is type and issubclass(type_, ArrayType):
+            if type(type_) is type and issubclass(type_, types.ArrayType):
                 dtype = type_.dtype
-                dtype = type_to_ir_type(dtype).as_pointer()
+                dtype = types.type_to_ir_type(dtype).as_pointer()
                 params.append(Parameter(name, dtype))
                 for n in range(type_.ndim):
                     params.append(Parameter(f'{name}_{n}', types.int64))
+            elif type(type_) is type and issubclass(type_, types.StructType):
+                dtype = ir_module.context.get_identified_type(type_.name)
+                dtype.set_body(*type_.body)
+                dtype = dtype.as_pointer()
+                params.append(Parameter(name, dtype))
             elif getattr(type_, '__origin__', None) is typing.List:
                 dtype = type_.__args__[0]
-                dtype = type_to_ir_type(dtype).as_pointer()
+                dtype = types.type_to_ir_type(dtype).as_pointer()
                 params.append(Parameter(name, dtype))
                 params.append(Parameter(f'{name}_0', types.int64))
             else:
-                dtype = type_to_ir_type(type_)
+                dtype = types.type_to_ir_type(type_)
                 params.append(Parameter(name, dtype))
 
-        return_type = type_to_ir_type(return_type)
+        return_type = types.type_to_ir_type(return_type)
         ir_signature = Signature(params, return_type)
         self.ir_signature = ir_signature
 
@@ -1106,7 +1088,6 @@ class Function(_lib.Function):
 
         # (5) The IR module and function
         node.compiled = {}
-        ir_module = ir.Module()
         for plugin in plugins:
             load_functions = getattr(plugin, 'load_functions', None)
             if load_functions is not None:
@@ -1179,7 +1160,7 @@ class LLVM:
     def __init__(self):
         self.engine = self.create_execution_engine()
 
-    def jit(self, py_function, signature=None, verbose=0):
+    def jit(self, py_function=None, signature=None, verbose=0):
         if type(py_function) is FunctionType:
             function = Function(self, py_function, signature)
             if function.can_be_compiled():

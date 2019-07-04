@@ -1,6 +1,7 @@
 [![Build Status](https://travis-ci.org/jdavid/py2llvm.svg?branch=master)](http://travis-ci.org/jdavid/py2llvm)
 
-This program translates a small subset of Python to LLVM IR.
+This program translates a small subset of Python to LLVM IR. Only Python 3.6+
+are supported.
 
 Example:
 
