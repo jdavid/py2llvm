@@ -13,9 +13,16 @@ except ImportError:
 void = ir.VoidType()
 float32 = ir.FloatType()
 float64 = ir.DoubleType()
+int8 = ir.IntType(8)
+int16 = ir.IntType(16)
 int32 = ir.IntType(32)
 int64 = ir.IntType(64)
 
+# Pointers
+int8p = int8.as_pointer()
+
+# Constants
+zero32 = ir.Constant(int32, 0)
 
 # Mapping from basic types to IR types
 types = {
@@ -58,6 +65,11 @@ class ArrayShape:
     def __init__(self, name):
         self.name = name
 
+    def subscript(self, visitor, slice):
+        value = visitor.lookup(f'{self.name}_{slice}')
+        return visitor.builder.load(value)
+
+
 class ArrayType:
     def __init__(self, name, ptr):
         self.name = name
@@ -81,18 +93,38 @@ class StructType:
         self.name = name
         self.ptr = ptr
 
-def Struct(name, **kw):
-    body = []
-    indices = {}
-    for i, (k, v) in enumerate(kw.items()):
-        v = type_to_ir_type(v)
-        body.append(v)
-        indices[k] = i
+    @classmethod
+    def get_body(self):
+        return [type_to_ir_type(type_) for name, type_ in self._fields_]
 
-    indices['name'] = name
-    indices['body'] = body
+    def get_index(self, field_name):
+        for i, (name, type_) in enumerate(self._fields_):
+            if field_name == name:
+                return i
+
+        return None
+
+    def __getattr__(self, attr):
+        i = self.get_index(attr)
+        if i is None:
+            raise AttributeError(f'Unexpected {attr}')
+
+        def cb(visitor):
+            idx = ir.Constant(int32, i)
+            ptr = visitor.builder.load(self.ptr)
+            ptr = visitor.builder.gep(ptr, [zero32, idx])
+            return visitor.builder.load(ptr)
+
+        return cb
+
+
+def Struct(name, **kw):
+    type_dict = {
+        '_name_': name,
+        '_fields_': kw.items(),
+    }
     return type(
         f'Struct[{name}, {kw}]',
         (StructType,),
-        indices,
+        type_dict,
     )

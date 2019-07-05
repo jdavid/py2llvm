@@ -20,7 +20,6 @@ from . import types
 
 zero = ir.Constant(types.int64, 0)
 one = ir.Constant(types.int64, 1)
-zero32 = ir.Constant(types.int32, 0)
 
 
 class Range:
@@ -732,9 +731,9 @@ class GenVisitor(NodeVisitor):
         """
         Subscript(expr value, slice slice, expr_context ctx)
         """
-        if isinstance(value, types.ArrayShape):
-            value = self.lookup(f'{value.name}_{slice}')
-            return self.builder.load(value)
+        subscript = getattr(value, 'subscript', None)
+        if subscript is not None:
+            return subscript(self, slice)
 
         # To make it simpler, make the slice to be a list always
         if type(slice) is not list:
@@ -869,16 +868,8 @@ class GenVisitor(NodeVisitor):
         Attribute(expr value, identifier attr, expr_context ctx)
         """
         assert ctx is ast.Load
-
-        # Support for structs
-        if isinstance(value, types.StructType):
-            idx = getattr(value, attr)
-            idx = ir.Constant(types.int32, idx)
-            ptr = self.builder.load(value.ptr)
-            ptr = self.builder.gep(ptr, [zero32, idx])
-            return self.builder.load(ptr)
-
-        return getattr(value, attr)
+        elem = getattr(value, attr)
+        return elem(self) if callable(elem) else elem
 
     def AnnAssign_annotation(self, node, parent, value):
         self.ltype = value
@@ -1055,8 +1046,8 @@ class Function(_lib.Function):
                 for n in range(type_.ndim):
                     params.append(Parameter(f'{name}_{n}', types.int64))
             elif type(type_) is type and issubclass(type_, types.StructType):
-                dtype = ir_module.context.get_identified_type(type_.name)
-                dtype.set_body(*type_.body)
+                dtype = ir_module.context.get_identified_type(type_._name_)
+                dtype.set_body(*type_.get_body())
                 dtype = dtype.as_pointer()
                 params.append(Parameter(name, dtype))
             elif getattr(type_, '__origin__', None) is typing.List:

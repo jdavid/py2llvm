@@ -3,6 +3,7 @@ import ctypes
 
 #import numpy as np
 import py2llvm as llvm
+#from py2llvm import StructType
 from py2llvm import Struct
 
 
@@ -12,8 +13,17 @@ args = parser.parse_args()
 verbose = args.verbose
 
 
+#class x_type(StructType):
+#    _name_ = 'point'
+#    _fields_ = [
+#        ('x', int),
+#        ('y', int),
+#    ]
+
+x_type = Struct('point', x=int, y=int)
+
 @llvm.jit(verbose=verbose)
-def f(x: Struct('point', x=int, y=int)) -> int:
+def f(x: x_type) -> int:
     return x.x * x.y
 
 
