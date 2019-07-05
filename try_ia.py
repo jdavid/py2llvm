@@ -6,7 +6,8 @@ from ctypes import c_int, c_uint8, c_int32, c_size_t
 from llvmlite import ir
 
 import py2llvm as llvm
-from py2llvm import StructType, int8p, int32, int64
+from py2llvm import StructType, int8p, int32, int64, float32
+from py2llvm import types
 
 
 parser = argparse.ArgumentParser()
@@ -47,13 +48,38 @@ class blosc2_prefilter_params(ctypes.Structure):
     ]
 
 
+class params_type_input:
+
+    def __init__(self, ptr, typ):
+        self.ptr = ptr
+        self.typ = typ
+
+    def subscript(self, visitor, slice, ctx):
+        raise NotImplementedError
+
+
+class params_type_inputs:
+
+    def __init__(self, ptr, typs):
+        self.ptr = ptr
+        self.typs = typs
+
+    def subscript(self, visitor, slice, ctx):
+        typ = self.typs[slice]
+        idx = types.value_to_ir_value(slice)
+        ptr = visitor.builder.gep(self.ptr, [types.zero, idx])
+        return params_type_input(ptr, typ)
+
 class params_type_out:
 
-    def __init__(self, ptr):
+    def __init__(self, ptr, typ):
         self.ptr = ptr
+        self.typ = typ
 
-    def subscript(self, visitor, value, slice):
-        pass
+    def subscript(self, visitor, slice, ctx):
+        ptr = visitor.builder.bitcast(self.ptr, self.typ.as_pointer())
+        ptr = visitor.builder.gep(ptr, [slice])
+        return ptr
 
 class params_type(StructType):
     _name_ = 'blosc2_prefilter_params'
@@ -67,12 +93,24 @@ class params_type(StructType):
         ('out_typesize', int32), # int32_t out_typesize;  // automatically filled
     ]
 
+    input_types = [float32]
+    out_type = float32
+
+    @property
+    def inputs(self):
+        inputs = super().__getattr__('inputs')
+        def cb(visitor):
+            ptr = inputs(visitor)
+            return params_type_inputs(ptr, self.input_types)
+
+        return cb
+
     @property
     def out(self):
-        out = super().out()
+        out = super().__getattr__('out')
         def cb(visitor):
             ptr = out(visitor)
-            return params_type_out(ptr)
+            return params_type_out(ptr, self.out_type)
 
         return cb
 

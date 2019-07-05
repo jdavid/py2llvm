@@ -1,3 +1,5 @@
+import ast
+
 from llvmlite import ir
 
 try:
@@ -22,6 +24,8 @@ int64 = ir.IntType(64)
 int8p = int8.as_pointer()
 
 # Constants
+zero = ir.Constant(int64, 0)
+one = ir.Constant(int64, 1)
 zero32 = ir.Constant(int32, 0)
 
 # Mapping from basic types to IR types
@@ -57,6 +61,36 @@ def type_to_ir_type(type_):
     raise ValueError(f'unexpected {type_}')
 
 
+def value_to_type(value):
+    """
+    Given a Python or IR value, return its Python or IR type.
+    """
+    return value.type if isinstance(value, ir.Value) else type(value)
+
+
+def value_to_ir_type(value):
+    """
+    Given a Python or IR value, return it's IR type.
+    """
+    if np is not None and isinstance(value, np.ndarray):
+        return Array(value.dtype.type, value.ndim)
+
+    type_ = value_to_type(value)
+    return type_to_ir_type(type_)
+
+
+def value_to_ir_value(value):
+    """
+    If value is already an IR value just return it. If it's a Python value then
+    convert to an IR constant and return it.
+    """
+    if isinstance(value, ir.Value):
+        return value
+
+    ir_type = value_to_ir_type(value)
+    return ir.Constant(ir_type, value)
+
+
 #
 # Compound types
 #
@@ -65,7 +99,8 @@ class ArrayShape:
     def __init__(self, name):
         self.name = name
 
-    def subscript(self, visitor, slice):
+    def subscript(self, visitor, slice, ctx):
+        assert ctx is ast.Load
         value = visitor.lookup(f'{self.name}_{slice}')
         return visitor.builder.load(value)
 
@@ -78,6 +113,38 @@ class ArrayType:
     @property
     def shape(self):
         return ArrayShape(self.name)
+
+    def subscript(self, visitor, slice, ctx):
+        # To make it simpler, make the slice to be a list always
+        if type(slice) is not list:
+            slice = [slice]
+
+        # Get the pointer to the beginning
+        ptr = visitor.builder.load(self.ptr)
+
+        assert ptr.type.is_pointer
+        if isinstance(ptr.type.pointee, ir.ArrayType):
+            ptr = visitor.builder.gep(ptr, [zero])
+
+        # Support for multidimensional arrays
+        dim = 1
+        while slice:
+            idx = slice.pop(0)
+            idx = value_to_ir_value(idx)
+            for i in range(dim, self.ndim):
+                dim_len = visitor.lookup(f'{self.name}_{dim}')
+                dim_len = visitor.builder.load(dim_len)
+                idx = visitor.builder.mul(idx, dim_len)
+
+            ptr = visitor.builder.gep(ptr, [idx])
+            dim += 1
+
+        # Return the value
+        if ctx is ast.Load:
+            return visitor.builder.load(ptr)
+        elif ctx is ast.Store:
+            return ptr
+
 
 def Array(dtype, ndim):
     return type(
@@ -113,7 +180,7 @@ class StructType:
             idx = ir.Constant(int32, i)
             ptr = visitor.builder.load(self.ptr)
             ptr = visitor.builder.gep(ptr, [zero32, idx])
-            return visitor.builder.load(ptr)
+            return ptr
 
         return cb
 

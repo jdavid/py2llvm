@@ -9,26 +9,18 @@ import typing
 
 from llvmlite import ir
 from llvmlite import binding
-import numpy as np
 
 from . import _lib
 from . import types
-
-#
-# Types and constants
-#
-
-zero = ir.Constant(types.int64, 0)
-one = ir.Constant(types.int64, 1)
 
 
 class Range:
 
     def __init__(self, *args):
         # Defaults
-        start = zero
+        start = types.zero
         stop = None
-        step = one
+        step = types.one
 
         # Unpack
         n = len(args)
@@ -40,27 +32,9 @@ class Range:
             start, stop, step = args
 
         # Keep IR values
-        self.start = value_to_ir_value(start)
-        self.stop = value_to_ir_value(stop)
-        self.step = value_to_ir_value(step)
-
-
-def value_to_type(value):
-    """
-    Given a Python or IR value, return its Python or IR type.
-    """
-    return value.type if isinstance(value, ir.Value) else type(value)
-
-
-def value_to_ir_type(value):
-    """
-    Given a Python or IR value, return it's IR type.
-    """
-    if isinstance(value, np.ndarray):
-        return types.Array(value.dtype.type, value.ndim)
-
-    type_ = value_to_type(value)
-    return types.type_to_ir_type(type_)
+        self.start = types.value_to_ir_value(start)
+        self.stop = types.value_to_ir_value(stop)
+        self.step = types.value_to_ir_value(step)
 
 
 def values_to_type(left, right):
@@ -70,8 +44,8 @@ def values_to_type(left, right):
 
     If mixing different lengths the longer one wins (e.g. float and double).
     """
-    ltype = value_to_type(left)
-    rtype = value_to_type(right)
+    ltype = types.value_to_type(left)
+    rtype = types.value_to_type(right)
 
     # Both are Python
     if not isinstance(ltype, ir.Type) and not isinstance(rtype, ir.Type):
@@ -94,18 +68,6 @@ def values_to_type(left, right):
         return types.int64
 
     return types.int32
-
-
-def value_to_ir_value(value):
-    """
-    If value is already an IR value just return it. If it's a Python value then
-    convert to an IR constant and return it.
-    """
-    if isinstance(value, ir.Value):
-        return value
-
-    ir_type = value_to_ir_type(value)
-    return ir.Constant(ir_type, value)
 
 
 #
@@ -499,6 +461,9 @@ class GenVisitor(NodeVisitor):
         if not isinstance(value, ir.Value):
             return ir.Constant(type_, value)
 
+        if value.type.is_pointer:
+            value = self.builder.load(value)
+
         if value.type is type_:
             return value
 
@@ -733,38 +698,7 @@ class GenVisitor(NodeVisitor):
         """
         subscript = getattr(value, 'subscript', None)
         if subscript is not None:
-            return subscript(self, slice)
-
-        # To make it simpler, make the slice to be a list always
-        if type(slice) is not list:
-            slice = [slice]
-
-        # Get the pointer to the beginning
-        if isinstance(value, types.ArrayType):
-            ptr = self.builder.load(value.ptr)
-
-        assert ptr.type.is_pointer
-        if isinstance(ptr.type.pointee, ir.ArrayType):
-            ptr = self.builder.gep(ptr, [zero])
-
-        # Support for multidimensional arrays
-        dim = 1
-        while slice:
-            idx = slice.pop(0)
-            idx = value_to_ir_value(idx)
-            for i in range(dim, value.ndim):
-                dim_len = self.lookup(f'{value.name}_{dim}')
-                dim_len = self.builder.load(dim_len)
-                idx = self.builder.mul(idx, dim_len)
-
-            ptr = self.builder.gep(ptr, [idx])
-            dim += 1
-
-        # Return the value
-        if ctx is ast.Load:
-            return self.builder.load(ptr)
-        elif ctx is ast.Store:
-            return ptr
+            return subscript(self, slice, ctx)
 
         raise NotImplementedError(f'unsupported {ctx} context')
 
@@ -808,9 +742,9 @@ class GenVisitor(NodeVisitor):
             node.step = expr.step
             name = target
         else:
-            start = zero
+            start = types.zero
             stop = ir.Constant(types.int64, expr.type.count)
-            node.step = one
+            node.step = types.one
             name = 'i'
             # Allocate and store the literal array to iterate
             arr = self.builder.alloca(expr.type)
@@ -832,7 +766,7 @@ class GenVisitor(NodeVisitor):
         if isinstance(expr, Range):
             self.locals[target] = idx
         else:
-            ptr = self.builder.gep(arr, [zero, idx])              # expr[idx]
+            ptr = self.builder.gep(arr, [types.zero, idx])        # expr[idx]
             x = self.builder.load(ptr)                            # % = expr[i]
             self.locals[target] = x
 
@@ -899,7 +833,7 @@ class GenVisitor(NodeVisitor):
 
     def Assign_exit(self, node, parent, targets, value):
         target = targets[0]
-        value = value_to_ir_value(value)
+        value = types.value_to_ir_value(value)
 
         if type(target) is str:
             # x =
@@ -1035,7 +969,7 @@ class Function(_lib.Function):
             arg = args[i] if i < nargs else None
             if type_ is inspect._empty:
                 assert arg is not None
-                type_ = value_to_ir_type(arg)
+                type_ = types.value_to_ir_type(arg)
                 self.signature.parameters[i] = Parameter(name, type_)
 
             # IR signature
