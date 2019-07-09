@@ -17,10 +17,7 @@ from . import types
 class Range:
 
     def __init__(self, *args):
-        # Defaults
-        start = types.zero
-        stop = None
-        step = types.one
+        start = step = None
 
         # Unpack
         n = len(args)
@@ -30,6 +27,12 @@ class Range:
             start, stop = args
         else:
             start, stop, step = args
+
+        # Defaults
+        if start is None:
+            start = ir.Constant(stop.type, 0)
+        if step is None:
+            step = ir.Constant(stop.type, 1)
 
         # Keep IR values
         self.start = types.value_to_ir_value(start)
@@ -751,7 +754,7 @@ class GenVisitor(NodeVisitor):
             self.builder.store(expr, arr)
 
         # Allocate and initialize the index variable
-        node.i = self.builder.alloca(types.int64, name=name)
+        node.i = self.builder.alloca(stop.type, name=name)
         self.builder.store(start, node.i)                         # i = start
         self.builder.branch(node.block_for)                       # br %for
 

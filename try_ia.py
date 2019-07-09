@@ -1,12 +1,12 @@
 from array import array
 import argparse
 import ctypes
-from ctypes import c_int, c_uint8, c_int32, c_size_t
+from ctypes import c_int, c_uint8, c_int32
 
 from llvmlite import ir
 
 import py2llvm as llvm
-from py2llvm import StructType, int8p, int32, int64, float32
+from py2llvm import StructType, int8p, int32, float32
 from py2llvm import types
 
 
@@ -23,7 +23,7 @@ typedef struct {
   int32_t input_typesizes[BLOSC2_PREFILTER_INPUTS_MAX];  // the typesizes for data inputs
   void *user_data;  // user-provided info (optional)
   uint8_t *out;  // automatically filled
-  size_t out_size;  // automatically filled
+  int32_t out_size;  // automatically filled
   int32_t out_typesize;  // automatically filled
 } blosc2_prefilter_params;
 
@@ -35,15 +35,16 @@ typedef struct {
 #typedef int (*blosc2_prefilter_fn)(blosc2_prefilter_params* params);
 """
 
+c_uint8_p = ctypes.POINTER(c_uint8)
 BLOSC2_PREFILTER_INPUTS_MAX = 128
 class blosc2_prefilter_params(ctypes.Structure):
     _fields_ = [
         ('ninputs', c_int),
-        ('inputs', ctypes.POINTER(c_uint8) * BLOSC2_PREFILTER_INPUTS_MAX),
+        ('inputs', c_uint8_p * BLOSC2_PREFILTER_INPUTS_MAX),
         ('input_typesizes', c_int32 * BLOSC2_PREFILTER_INPUTS_MAX),
         ('user_data', ctypes.c_void_p),
-        ('out', ctypes.POINTER(c_uint8)),
-        ('out_size', c_size_t),
+        ('out', c_uint8_p),
+        ('out_size', c_int32),
         ('out_typesize', c_int32),
     ]
 
@@ -55,7 +56,11 @@ class params_type_input:
         self.typ = typ
 
     def subscript(self, visitor, slice, ctx):
-        raise NotImplementedError
+        ptr = visitor.builder.load(self.ptr)
+        ptr = visitor.builder.bitcast(ptr, self.typ.as_pointer())
+        ptr = visitor.builder.gep(ptr, [slice])
+        value = visitor.builder.load(ptr)
+        return value
 
 
 class params_type_inputs:
@@ -77,7 +82,8 @@ class params_type_out:
         self.typ = typ
 
     def subscript(self, visitor, slice, ctx):
-        ptr = visitor.builder.bitcast(self.ptr, self.typ.as_pointer())
+        ptr = visitor.builder.load(self.ptr)
+        ptr = visitor.builder.bitcast(ptr, self.typ.as_pointer())
         ptr = visitor.builder.gep(ptr, [slice])
         return ptr
 
@@ -89,7 +95,7 @@ class params_type(StructType):
         ('input_typesizes', ir.ArrayType(int32, BLOSC2_PREFILTER_INPUTS_MAX)),
         ('user_data', int8p), # LLVM does not have the concept of void*
         ('out', int8p), # LLVM doesn't make the difference between signed and unsigned
-        ('out_size', int64), # int64 may not be the same as size_t
+        ('out_size', int32),
         ('out_typesize', int32), # int32_t out_typesize;  // automatically filled
     ]
 
@@ -130,9 +136,11 @@ if __name__ == '__main__':
     inputs = [a]
     out = array('f', [0.0] * n)
 
+    inputs_address = [x.buffer_info()[0] for x in inputs]
+    inputs_address = [ctypes.cast(x, c_uint8_p) for x in inputs_address]
     data = blosc2_prefilter_params(
         len(inputs),                          # ninputs
-        [x.buffer_info()[0] for x in inputs], # inputs
+        inputs_address,                       # inputs
         [x.itemsize for x in inputs],         # input_typesizes
         0,                                    # user_data
         out.buffer_info()[0],                 # out
