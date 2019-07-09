@@ -465,9 +465,6 @@ class GenVisitor(NodeVisitor):
         if not isinstance(value, ir.Value):
             return ir.Constant(type_, value)
 
-        if value.type.is_pointer:
-            value = self.builder.load(value)
-
         if value.type is type_:
             return value
 
@@ -806,8 +803,14 @@ class GenVisitor(NodeVisitor):
         Attribute(expr value, identifier attr, expr_context ctx)
         """
         assert ctx is ast.Load
-        elem = getattr(value, attr)
-        return elem(self) if callable(elem) else elem
+        value = getattr(value, attr)
+        if callable(value):
+            value = value(self)
+
+        if isinstance(value, ir.Value) and value.type.is_pointer:
+            value = self.builder.load(value)
+
+        return value
 
     def AnnAssign_annotation(self, node, parent, value):
         self.ltype = value
