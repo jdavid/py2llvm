@@ -29,10 +29,11 @@ class Range:
             start, stop, step = args
 
         # Defaults
+        type_ = stop.type if isinstance(stop, ir.Value) else types.int64
         if start is None:
-            start = ir.Constant(stop.type, 0)
+            start = ir.Constant(type_, 0)
         if step is None:
-            step = ir.Constant(stop.type, 1)
+            step = ir.Constant(type_, 1)
 
         # Keep IR values
         self.start = types.value_to_ir_value(start)

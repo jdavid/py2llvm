@@ -35,13 +35,15 @@ typedef struct {
 #typedef int (*blosc2_prefilter_fn)(blosc2_prefilter_params* params);
 """
 
-c_uint8_p = ctypes.POINTER(c_uint8)
 BLOSC2_PREFILTER_INPUTS_MAX = 128
+c_uint8_p = ctypes.POINTER(c_uint8)
+inputs_type = c_uint8_p * BLOSC2_PREFILTER_INPUTS_MAX
+input_typesizes_type = c_int32 * BLOSC2_PREFILTER_INPUTS_MAX
 class blosc2_prefilter_params(ctypes.Structure):
     _fields_ = [
         ('ninputs', c_int),
-        ('inputs', c_uint8_p * BLOSC2_PREFILTER_INPUTS_MAX),
-        ('input_typesizes', c_int32 * BLOSC2_PREFILTER_INPUTS_MAX),
+        ('inputs', inputs_type),
+        ('input_typesizes', input_typesizes_type),
         ('user_data', ctypes.c_void_p),
         ('out', c_uint8_p),
         ('out_size', c_int32),
@@ -122,31 +124,56 @@ class params_type(StructType):
 
 
 @llvm.jit(verbose=verbose)
-def f(params: params_type) -> int:
+def f(params: params_type) -> float:
     n = params.out_size / params.out_typesize
+
+    x = 0.0
     for i in range(n):
+        x = x + params.inputs[0][i]
         params.out[i] = params.inputs[0][i]
 
-    return 0
+    return x
+
+
+def array_to_pointer(array):
+    address, length = array.buffer_info()
+    return ctypes.cast(address, c_uint8_p)
+
+def prep_data(*args):
+    # Number of inputs and number of items in every input
+    ninputs = len(args)
+    nitems = len(args[0])
+
+    # Prepare output array
+    res = array('f', [0.0] * nitems)
+
+    # Inputs
+    inputs = [array_to_pointer(x) for x in args]
+    inputs = inputs_type(*inputs)
+
+    input_typesizes = [x.itemsize for x in args]
+    input_typesizes = input_typesizes_type(*input_typesizes)
+
+    # Output
+    out = array_to_pointer(res)
+    out_itemsize = res.itemsize
+    out_size = nitems * out_itemsize
+
+    # User data
+    user_data = 0
+
+    data = blosc2_prefilter_params(
+        ninputs, inputs, input_typesizes,
+        user_data,
+        out, out_size, out_itemsize)
+
+    return data, res
 
 
 if __name__ == '__main__':
     a = array('f', [1.0, 2.0, 3.0])
-    n = len(a)
-    inputs = [a]
-    out = array('f', [0.0] * n)
+    data, out = prep_data(a)
 
-    inputs_address = [x.buffer_info()[0] for x in inputs]
-    inputs_address = [ctypes.cast(x, c_uint8_p) for x in inputs_address]
-    data = blosc2_prefilter_params(
-        len(inputs),                          # ninputs
-        inputs_address,                       # inputs
-        [x.itemsize for x in inputs],         # input_typesizes
-        0,                                    # user_data
-        out.buffer_info()[0],                 # out
-        n * out.itemsize,                     # out_size
-        out.itemsize,                         # out_typesize
-    )
-
-    out = f(data)
+    ret = f(data)
+    print(ret)
     print(out)
