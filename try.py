@@ -4,7 +4,7 @@ import ctypes
 #import numpy as np
 import py2llvm as llvm
 #from py2llvm import StructType
-from py2llvm import Struct
+from py2llvm import Struct, int64
 
 
 parser = argparse.ArgumentParser()
@@ -20,10 +20,10 @@ verbose = args.verbose
 #        ('y', int),
 #    ]
 
-x_type = Struct('point', x=int, y=int)
+x_type = Struct('point', x=int64, y=int64)
 
 @llvm.jit(verbose=verbose)
-def f(x: x_type) -> int:
+def f(x: x_type) -> int64:
     return x.x * x.y
 
 
@@ -38,7 +38,7 @@ class Point(ctypes.Structure):
 
 
 if __name__ == '__main__':
-    out = f(Point(5, 3))
+    out = f(Point(3, -5))
     print(out)
 
 #  # Prepare function arguments

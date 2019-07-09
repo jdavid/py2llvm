@@ -907,7 +907,7 @@ class Function(_lib.Function):
     ir          -- LLVM's IR code
     """
 
-    def __init__(self, llvm, py_function, signature):
+    def __init__(self, llvm, py_function, signature, f_globals):
         assert type(py_function) is FunctionType
         self.llvm = llvm
         self.py_function = py_function
@@ -915,6 +915,7 @@ class Function(_lib.Function):
 
         self.signature = self.__get_signature(signature)
         self.compiled = False
+        self.globals = f_globals
 
     def __get_signature(self, signature):
         inspect_signature = inspect.signature(self.py_function)
@@ -1032,7 +1033,7 @@ class Function(_lib.Function):
         ir_function = ir.Function(ir_module, f_type, self.name)
 
         # (6) AST pass: structure
-        node.globals = inspect.stack()[1].frame.f_globals
+        node.globals = self.globals
         node.py_signature = self.signature
         node.ir_signature = ir_signature
         node.ir_function = ir_function
@@ -1093,8 +1094,10 @@ class LLVM:
         self.engine = self.create_execution_engine()
 
     def jit(self, py_function=None, signature=None, verbose=0):
+        f_globals = inspect.stack()[1].frame.f_globals
+
         if type(py_function) is FunctionType:
-            function = Function(self, py_function, signature)
+            function = Function(self, py_function, signature, f_globals)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
@@ -1102,7 +1105,7 @@ class LLVM:
         # Called as a decorator
         signature = py_function
         def wrapper(py_function):
-            function = Function(self, py_function, signature)
+            function = Function(self, py_function, signature, f_globals)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
