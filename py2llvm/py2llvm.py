@@ -10,7 +10,7 @@ import typing
 from llvmlite import ir
 from llvmlite import binding
 
-from . import _lib
+from . import lib
 from . import types
 
 
@@ -893,7 +893,7 @@ class Signature:
         self.parameters = parameters
         self.return_type = return_type
 
-class Function(_lib.Function):
+class Function(lib.Function):
     """
     Wraps a Python function. Compiled to IR, it will be executed with libffi:
 
@@ -1068,9 +1068,11 @@ class Function(_lib.Function):
         for py_arg in args:
             c_type = self.ir_signature.parameters[len(c_args)].type
             for plugin in plugins:
-                arguments = plugin.expand_argument(py_arg, c_type)
-                if arguments is not None:
-                    c_args.extend(arguments)
+                expand_argument = getattr(plugin, 'expand_argument', None)
+                if expand_argument is not None:
+                    arguments = expand_argument(py_arg, c_type)
+                    if arguments is not None:
+                        c_args.extend(arguments)
 
         return tuple(c_args)
 
