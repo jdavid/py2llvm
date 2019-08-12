@@ -1,7 +1,9 @@
 .*.swp
+*.o
 *.so
 __pycache__/
 /.hypothesis/
 /build/
 /dist/
 /venv/
+/py2llvm.egg-info/

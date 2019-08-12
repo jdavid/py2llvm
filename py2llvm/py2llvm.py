@@ -2,6 +2,7 @@
 import ast
 import builtins
 import collections
+import ctypes
 import inspect
 import operator
 from types import FunctionType
@@ -10,7 +11,6 @@ import typing
 from llvmlite import ir
 from llvmlite import binding
 
-from . import lib
 from . import types
 
 
@@ -893,7 +893,7 @@ class Signature:
         self.parameters = parameters
         self.return_type = return_type
 
-class Function(lib.Function):
+class Function:
     """
     Wraps a Python function. Compiled to IR, it will be executed with libffi:
 
@@ -1054,7 +1054,7 @@ class Function(lib.Function):
 
         # (9) C function
         self.cfunction_ptr = self.llvm.engine.get_function_address(self.name)
-        self.prepare(self) # prepare libffi to call the function
+        self.prepare() # prepare libffi to call the function
 
         # (10) Done
         self.compiled = True
@@ -1080,7 +1080,7 @@ class Function(lib.Function):
     def __call__(self, *args, verbose=0):
         c_args = self.call_args(*args, verbose=verbose)
 
-        value = super().__call__(c_args)
+        value = self.call(c_args)
         if verbose:
             print('====== Output ======')
             print(f'args = {args}')
@@ -1089,17 +1089,45 @@ class Function(lib.Function):
         return value
 
 
+    def prepare(self):
+        raise NotImplementedError
+
+    def call(self, c_args):
+        raise NotImplementedError
+
+
+class CTypesFunction(Function):
+
+    def prepare(self):
+        type2ctypes = {
+            'i64': ctypes.c_int64,
+            'f64': ctypes.c_double,
+            'p': ctypes.c_void_p,
+            '': None,
+        }
+
+        rtype = type2ctypes[self.rtype]
+        argtypes = [type2ctypes[x] for x in self.argtypes]
+        assert self.nargs == len(argtypes)
+        func_ptr = self.cfunction_ptr
+
+        self.cfunc = ctypes.CFUNCTYPE(rtype, *argtypes)(func_ptr)
+
+    def call(self, c_args):
+        return self.cfunc(*c_args)
+
 
 class LLVM:
 
-    def __init__(self):
+    def __init__(self, fclass):
         self.engine = self.create_execution_engine()
+        self.fclass = fclass
 
     def jit(self, py_function=None, signature=None, verbose=0):
         f_globals = inspect.stack()[1].frame.f_globals
 
         if type(py_function) is FunctionType:
-            function = Function(self, py_function, signature, f_globals)
+            function = self.fclass(self, py_function, signature, f_globals)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
@@ -1107,7 +1135,7 @@ class LLVM:
         # Called as a decorator
         signature = py_function
         def wrapper(py_function):
-            function = Function(self, py_function, signature, f_globals)
+            function = self.fclass(self, py_function, signature, f_globals)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
@@ -1184,7 +1212,7 @@ binding.initialize()
 binding.initialize_native_target()
 binding.initialize_native_asmprinter()  # yes, even this one
 
-llvm = LLVM()
+llvm = LLVM(CTypesFunction)
 
 # Plugins (entry points)
 import pkg_resources

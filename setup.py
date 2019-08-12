@@ -1,4 +1,4 @@
-import subprocess
+#import subprocess
 
 from setuptools import setup, Extension
 
@@ -6,15 +6,17 @@ from setuptools import setup, Extension
 name = 'py2llvm'
 
 def ext_modules():
-    cmd = ["pkg-config", "--variable=includedir", "libffi"]
-    cp = subprocess.run(cmd, stdout=subprocess.PIPE)
-    if cp.returncode != 0:
-        return []
+#   cmd = ["pkg-config", "--variable=includedir", "libffi"]
+#   cp = subprocess.run(cmd, stdout=subprocess.PIPE)
+#   if cp.returncode != 0:
+#       return []
 
-    include_dirs = [cp.stdout.strip().decode()]
+#   include_dirs = [cp.stdout.strip().decode()]
+    include_dirs = []
     return [
         Extension('py2llvm._lib', sources=['py2llvm/_lib.c'],
-                  include_dirs=include_dirs, libraries=['ffi'],
+                  include_dirs=include_dirs,
+                  #libraries=['ffi'],
         ),
     ]
 
