@@ -1,6 +1,7 @@
 .PHONY: build install
 
 build:
+	$(MAKE) -C lib
 	python setup.py build_ext --inplace
 
 install:
