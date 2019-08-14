@@ -167,6 +167,8 @@ LLVMBool llvm_init()
         return error;
     }
 
+    LLVMLinkInMCJIT();
+
     return error;
 }
 
