@@ -1,3 +1,5 @@
+.PHONY: lib
+
 LLVM_CONFIG := $(shell llvm-config --libs --cflags --ldflags)
 
 lib:

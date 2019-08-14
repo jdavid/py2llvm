@@ -17,21 +17,34 @@ py_llvm_dispose(PyObject *self, PyObject *args)
 }
 
 PyObject *
-py_llvm_compile(PyObject *self, PyObject *args)
+py_llvm_compile_file(PyObject *self, PyObject *args)
 {
     const char *filename, *fname;
 
     if (!PyArg_ParseTuple(args, "ss", &filename, &fname))
         return NULL;
 
-    uint64_t address = llvm_compile(filename, fname);
+    uint64_t address = llvm_compile_file(filename, fname);
+    return PyLong_FromUnsignedLong(address);
+}
+
+PyObject *
+py_llvm_compile_str(PyObject *self, PyObject *args)
+{
+    const char *data, *fname;
+
+    if (!PyArg_ParseTuple(args, "ss", &data, &fname))
+        return NULL;
+
+    uint64_t address = llvm_compile_str(data, fname);
     return PyLong_FromUnsignedLong(address);
 }
 
 static PyMethodDef methods[] = {
     {"llvm_init", py_llvm_init, METH_NOARGS, ""},
     {"llvm_dispose", py_llvm_dispose, METH_NOARGS, ""},
-    {"llvm_compile", py_llvm_compile, METH_VARARGS, ""},
+    {"llvm_compile_file", py_llvm_compile_file, METH_VARARGS, ""},
+    {"llvm_compile_str", py_llvm_compile_str, METH_VARARGS, ""},
     {NULL}
 };
 

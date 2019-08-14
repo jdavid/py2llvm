@@ -13,7 +13,7 @@
 
 //#include <inttypes.h>
 #include <stdio.h>
-//#include <stdlib.h>
+#include <string.h>
 
 //#include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
@@ -23,7 +23,6 @@
 #include <llvm-c/Transforms/PassManagerBuilder.h>
 
 #include "prefilter.h"
-//#include "c-blosc2/blosc/blosc.h"
 
 
 // Globals
@@ -72,28 +71,7 @@ int optimize(LLVMExecutionEngineRef *engine, LLVMModuleRef *mod) {
 }
 
 
-LLVMBool llvm_init()
-{
-    LLVMBool error;
-
-    //LLVMLinkInMCJIT();
-    error = LLVMInitializeNativeTarget();
-    error = LLVMInitializeNativeAsmPrinter();
-
-    return error;
-}
-
-void llvm_dispose()
-{
-    LLVMDisposeExecutionEngine(engine);
-    LLVMContextDispose(context);
-
-    // for some strange reason, this does a "pointer being freed was not allocated"
-    //LLVMDisposeMemoryBuffer(memoryBuffer);
-}
-
-
-uint64_t llvm_compile(const char *filename, const char *fname)
+uint64_t compile_buffer(LLVMMemoryBufferRef buffer, const char *fname)
 {
     uint64_t address = 0;
 
@@ -103,14 +81,10 @@ uint64_t llvm_compile(const char *filename, const char *fname)
     char *message = NULL;
     LLVMBool error;
 
-    // Read the IR file into a buffer
-    LLVMMemoryBufferRef buffer;
-    error = LLVMCreateMemoryBufferWithContentsOfFile(filename, &buffer, &message);
-    if (error)
-    {
-        fprintf(stderr, "%s\n", message);
-        goto exit;
-    }
+    // Debug, print not optimized code
+//  fprintf(stderr, "=== IR input ===\n");
+//  fprintf(stderr, "%s", LLVMGetBufferStart(buffer));
+//  fprintf(stderr, "================\n");
 
     // Parse IR in memory buffer, creates module
     LLVMModuleRef mod;
@@ -123,6 +97,12 @@ uint64_t llvm_compile(const char *filename, const char *fname)
         goto exit;
     }
 
+    // The triple must be set or otherwise the module won't be compiled
+    char* triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(mod, triple);
+    LLVMDisposeMessage(triple);
+
+    // Verify the module
     error = LLVMVerifyModule(mod, LLVMAbortProcessAction, &message);
     if (error)
     {
@@ -144,13 +124,80 @@ uint64_t llvm_compile(const char *filename, const char *fname)
     //
 
     optimize(&engine, &mod);
-    // Output optimized IR for verification
-    //LLVMPrintModuleToFile(mod, "debug_O3.ll", &message);
+
+    // Debug, print optimized code
+//  fprintf(stderr, "=== IR out   ===\n");
+//  LLVMDumpModule(mod);
+//  fprintf(stderr, "================\n");
 
     // Function address
     address = LLVMGetFunctionAddress(engine, fname);
+//  fprintf(stderr, "ADDRESS %s=%lu\n", fname, address);
 
 exit:
     LLVMDisposeMessage(message);
+    // for some strange reason, this does a "pointer being freed was not allocated"
+    //LLVMDisposeMemoryBuffer(memoryBuffer);
     return address;
+}
+
+
+/*
+ * Public interface
+ */
+
+LLVMBool llvm_init()
+{
+    LLVMBool error;
+
+//  LLVMPassRegistryRef pr = LLVMGetGlobalPassRegistry();
+//  LLVMInitializeCore(pr);
+
+    error = LLVMInitializeNativeTarget();
+    if (error)
+    {
+        fprintf(stderr, "ERROR LLVMInitializeNativeTarget\n");
+        return error;
+    }
+
+    error = LLVMInitializeNativeAsmPrinter();
+    if (error)
+    {
+        fprintf(stderr, "ERROR LLVMInitializeNativeAsmPrinter\n");
+        return error;
+    }
+
+    return error;
+}
+
+void llvm_dispose()
+{
+    LLVMDisposeExecutionEngine(engine);
+    LLVMContextDispose(context);
+}
+
+uint64_t llvm_compile_file(const char *filename, const char *fname)
+{
+    uint64_t address = 0;
+    LLVMMemoryBufferRef buffer;
+    LLVMBool error;
+    char *message = NULL;
+
+    error = LLVMCreateMemoryBufferWithContentsOfFile(filename, &buffer, &message);
+    if (error)
+        fprintf(stderr, "ERROR creating buffer from %s: %s\n", filename, message);
+    else
+        address = compile_buffer(buffer, fname);
+
+    LLVMDisposeMessage(message);
+    return address;
+}
+
+uint64_t llvm_compile_str(const char *data, const char *fname)
+{
+    LLVMMemoryBufferRef buffer;
+
+    size_t data_len = strlen(data) + 1;
+    buffer = LLVMCreateMemoryBufferWithMemoryRangeCopy(data, data_len, "");
+    return compile_buffer(buffer, fname);
 }
