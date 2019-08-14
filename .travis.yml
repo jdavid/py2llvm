@@ -13,7 +13,7 @@ python:
 #      env: PATH=/c/Python37:/c/Python37/Scripts:$PATH
 
 install:
+  - make build
   - pip install .[test]
-  - python setup.py build_ext --inplace
 
 script: pytest tests/
