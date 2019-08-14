@@ -167,6 +167,8 @@ LLVMBool llvm_init()
         return error;
     }
 
+    // Fixes this error in Travis:
+    // failed to create execution engine: 'Interpreter has not been linked in.'
     LLVMLinkInMCJIT();
 
     return error;
