@@ -8,10 +8,9 @@ import operator
 from types import FunctionType
 import typing
 
-from llvmlite import ir
+from llvmlite import binding, ir
 
 from . import types
-from . import prefilter
 
 
 class Range:
@@ -1121,6 +1120,7 @@ class CTypesFunction(Function):
 class LLVM:
 
     def __init__(self, fclass):
+        self.engine = self.create_execution_engine()
         self.fclass = fclass
 
     def jit(self, py_function=None, signature=None, verbose=0):
@@ -1142,18 +1142,77 @@ class LLVM:
 
         return wrapper
 
+    def create_execution_engine(self):
+        """
+        Create an ExecutionEngine suitable for JIT code generation on
+        the host CPU.  The engine is reusable for an arbitrary number of
+        modules.
+        """
+        # Create a target machine representing the host
+        target = binding.Target.from_default_triple()
+        self.triple = target.triple # Keep the triple for later
+        # Passing cpu, freatures and opt has not proved to be faster, but do it
+        # anyway, just to show it.
+        cpu = binding.get_host_cpu_name()
+        features = binding.get_host_cpu_features()
+        target_machine = target.create_target_machine(
+            cpu=cpu,
+            features=features.flatten(),
+            opt=3,
+        )
+
+        # And an execution engine with an empty backing module
+        backing_mod = binding.parse_assembly("")
+        engine = binding.create_mcjit_compiler(backing_mod, target_machine)
+        return engine
+
     def compile_ir(self, llvm_ir, name, verbose):
         """
         Compile the LLVM IR string with the given engine.
         The compiled module object is returned.
         """
-        address = prefilter.llvm_compile_str(llvm_ir, name)
+        engine = self.engine
+
+        # Create a LLVM module object from the IR
+        mod = binding.parse_assembly(llvm_ir)
+        mod.verify()
+        # Assign triple, so the IR can be saved and compiled with llc
+        mod.triple = self.triple
+        if verbose:
+            print('====== IR (parsed) ======')
+            print(mod)
+
+        # Optimize
+        # With level 1-3 already a number of optimization passes are applied
+        fref = mod.get_function(name)
+        pmb = binding.PassManagerBuilder()
+        pmb.opt_level = 3 # 0-3 (default=2)
+        fpm = binding.FunctionPassManager(mod)
+        #fpm.add_sroa_pass()
+        #fpm.add_mem2reg_pass()
+        pmb.populate(fpm)
+        fpm.initialize()
+        fpm.run(fref)
+        fpm.finalize()
+
+        # Now add the module and make sure it is ready for execution
+        engine.add_module(mod)
+        engine.finalize_object()
+        engine.run_static_constructors()
+
+        if verbose:
+            print('====== IR (optimized) ======')
+            print(mod)
+
+        address = self.engine.get_function_address(name)
         assert address
         return address
 
 
 # All these initializations are required for code generation!
-prefilter.llvm_init()
+binding.initialize()
+binding.initialize_native_target()
+binding.initialize_native_asmprinter()
 
 llvm = LLVM(CTypesFunction)
 

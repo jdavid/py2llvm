@@ -28,22 +28,8 @@ def lib_ext():
     )
 
 
-def prefilter_ext():
-    include_dirs = cmd("llvm-config", "--includedir")
-    if include_dirs is None:
-        return None
-
-    return Extension(
-        'py2llvm.prefilter',
-        sources=['py2llvm/prefilter.c'],
-        include_dirs=include_dirs + ['.'],
-        libraries=['lib/prefilter'],
-        library_dirs=['.'],
-    )
-
-
 def ext_modules():
-    extensions = [lib_ext(), prefilter_ext()]
+    extensions = [lib_ext()]
     return [x for x in extensions if x is not None]
 
 
