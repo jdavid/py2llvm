@@ -1050,7 +1050,9 @@ class Function:
             print('====== IR ======')
             print(self.ir)
 
-        address = self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
+        self.mod = self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
+        address = self.llvm.engine.get_function_address(self.name)
+        assert address
 
         # (9) C function
         self.cfunction_ptr = address
@@ -1059,6 +1061,9 @@ class Function:
         # (10) Done
         self.compiled = True
 
+    @property
+    def bc(self):
+        return self.mod.as_bitcode()
 
     def call_args(self, *args, verbose=0):
         if self.compiled is False:
@@ -1204,9 +1209,7 @@ class LLVM:
             print('====== IR (optimized) ======')
             print(mod)
 
-        address = self.engine.get_function_address(name)
-        assert address
-        return address
+        return mod
 
 
 # All these initializations are required for code generation!
