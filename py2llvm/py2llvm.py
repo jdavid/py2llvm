@@ -906,7 +906,7 @@ class Function:
     ir          -- LLVM's IR code
     """
 
-    def __init__(self, llvm, py_function, signature, f_globals):
+    def __init__(self, llvm, py_function, signature, f_globals, optimize=False):
         assert type(py_function) is FunctionType
         self.llvm = llvm
         self.py_function = py_function
@@ -915,6 +915,7 @@ class Function:
         self.signature = self.__get_signature(signature)
         self.compiled = False
         self.globals = f_globals
+        self.optimize = optimize
 
     def __get_signature(self, signature):
         inspect_signature = inspect.signature(self.py_function)
@@ -1048,7 +1049,8 @@ class Function:
             print('====== IR ======')
             print(self.ir)
 
-        self.mod = self.llvm.compile_ir(self.ir, self.name, verbose) # Compile
+        # Compile
+        self.mod = self.llvm.compile_ir(self.ir, self.name, verbose, self.optimize)
         address = self.llvm.engine.get_function_address(self.name)
         assert address
 
@@ -1138,11 +1140,11 @@ class LLVM:
         self.dtypes[type_id] = dtype
         return dtype
 
-    def jit(self, py_function=None, signature=None, verbose=0):
+    def jit(self, py_function=None, signature=None, verbose=0, optimize=False):
         f_globals = inspect.stack()[1].frame.f_globals
 
         if type(py_function) is FunctionType:
-            function = self.fclass(self, py_function, signature, f_globals)
+            function = self.fclass(self, py_function, signature, f_globals, optimize)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
@@ -1150,7 +1152,7 @@ class LLVM:
         # Called as a decorator
         signature = py_function
         def wrapper(py_function):
-            function = self.fclass(self, py_function, signature, f_globals)
+            function = self.fclass(self, py_function, signature, f_globals, optimize)
             if function.can_be_compiled():
                 function.compile(verbose)
             return function
@@ -1181,7 +1183,7 @@ class LLVM:
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
         return engine
 
-    def compile_ir(self, llvm_ir, name, verbose):
+    def compile_ir(self, llvm_ir, name, verbose, optimize=False):
         """
         Compile the LLVM IR string with the given engine.
         The compiled module object is returned.
@@ -1198,17 +1200,18 @@ class LLVM:
             print(mod)
 
         # Optimize
-        # With level 1-3 already a number of optimization passes are applied
-        fref = mod.get_function(name)
-        pmb = binding.PassManagerBuilder()
-        pmb.opt_level = 3 # 0-3 (default=2)
-        fpm = binding.FunctionPassManager(mod)
-        #fpm.add_sroa_pass()
-        #fpm.add_mem2reg_pass()
-        pmb.populate(fpm)
-        fpm.initialize()
-        fpm.run(fref)
-        fpm.finalize()
+        if optimize:
+            # With level 1-3 already a number of optimization passes are applied
+            fref = mod.get_function(name)
+            pmb = binding.PassManagerBuilder()
+            pmb.opt_level = 3 # 0-3 (default=2)
+            fpm = binding.FunctionPassManager(mod)
+            #fpm.add_sroa_pass()
+            #fpm.add_mem2reg_pass()
+            pmb.populate(fpm)
+            fpm.initialize()
+            fpm.run(fref)
+            fpm.finalize()
 
         # Now add the module and make sure it is ready for execution
         engine.add_module(mod)
