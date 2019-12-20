@@ -1,6 +1,6 @@
 import subprocess
 
-from setuptools import setup, Extension
+from setuptools import setup
 
 
 name = 'py2llvm'
@@ -11,18 +11,6 @@ def cmd(*args):
         return None
 
     return cp.stdout.strip().decode().split()
-
-
-def lib_ext():
-    return Extension(
-        'py2llvm._lib',
-        sources=['py2llvm/_lib.c'],
-    )
-
-
-def ext_modules():
-    extensions = [lib_ext()]
-    return [x for x in extensions if x is not None]
 
 
 setup(
@@ -37,9 +25,6 @@ setup(
     entry_points={
         'py2llvm_plugins': [
             'default = py2llvm.default',
-            'lib = py2llvm.lib',
         ],
     },
-    # Extensions
-    ext_modules=ext_modules(),
 )

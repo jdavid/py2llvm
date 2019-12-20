@@ -13,7 +13,6 @@ python:
 #      env: PATH=/c/Python37:/c/Python37/Scripts:$PATH
 
 install:
-  - make build CC=clang
   - pip install .[test]
 
 script: pytest tests/

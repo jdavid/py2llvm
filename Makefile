@@ -1,7 +1,4 @@
-.PHONY: build install
-
-build:
-	python setup.py build_ext --inplace
+.PHONY: install
 
 install:
 	python3 -m venv venv
