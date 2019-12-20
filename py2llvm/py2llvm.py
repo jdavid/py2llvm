@@ -987,9 +987,7 @@ class Function:
                 for n in range(type_.ndim):
                     params.append(Parameter(f'{name}_{n}', types.int64))
             elif type(type_) is type and issubclass(type_, types.StructType):
-                dtype = ir_module.context.get_identified_type(type_._name_)
-                dtype.set_body(*type_.get_body())
-                dtype = dtype.as_pointer()
+                dtype = self.llvm.get_dtype(ir_module, type_)
                 params.append(Parameter(name, dtype))
             elif getattr(type_, '__origin__', None) is typing.List:
                 dtype = type_.__args__[0]
@@ -1127,6 +1125,18 @@ class LLVM:
     def __init__(self, fclass):
         self.engine = self.create_execution_engine()
         self.fclass = fclass
+        self.dtypes = {}
+
+    def get_dtype(self, ir_module, type_):
+        type_id = id(type_)
+        if type_id in self.dtypes:
+            return self.dtypes[type_id]
+
+        dtype = ir_module.context.get_identified_type(type_._name_)
+        dtype.set_body(*type_.get_body())
+        dtype = dtype.as_pointer()
+        self.dtypes[type_id] = dtype
+        return dtype
 
     def jit(self, py_function=None, signature=None, verbose=0):
         f_globals = inspect.stack()[1].frame.f_globals
