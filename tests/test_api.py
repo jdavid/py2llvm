@@ -70,7 +70,7 @@ def f_dec_hints(array: Array(float, 1)) -> float:
 
     return acc
 
-@jit(signature)
+@jit(signature=signature)
 def f_dec_sig(array):
     acc = 0.0
     i = 0

@@ -378,11 +378,8 @@ class BlockVisitor(NodeVisitor):
 
         # Keep an ArrayType instance, actually, so we can resolve .shape[idx]
         for param in root.py_signature.parameters:
-            if type(param.type) is type and issubclass(param.type, types.ArrayType):
-                ptr = node.locals[param.name]
-                node.locals[param.name] = param.type(param.name, ptr)
-            elif type(param.type) is type and issubclass(param.type, types.StructType):
-                ptr = node.locals[param.name]
+            if type(param.type) is type and issubclass(param.type, types.ComplexType):
+                ptr = node.locals.pop(param.name)
                 node.locals[param.name] = param.type(param.name, ptr)
 
         # Create the second block, this is where the code proper will start,
@@ -979,7 +976,7 @@ class Function:
             self.signature.return_type = return_type
 
         # (3) The IR signature
-        ir_module = ir.Module()
+        self.ir_module = ir.Module()
         nargs = len(args)
         params = []
         for i, (name, type_) in enumerate(self.signature.parameters):
@@ -998,7 +995,7 @@ class Function:
                 for n in range(type_.ndim):
                     params.append(Parameter(f'{name}_{n}', types.int64))
             elif type(type_) is type and issubclass(type_, types.StructType):
-                dtype = self.llvm.get_dtype(ir_module, type_)
+                dtype = self.llvm.get_dtype(self.ir_module, type_)
                 params.append(Parameter(name, dtype))
             elif getattr(type_, '__origin__', None) is typing.List:
                 dtype = type_.__args__[0]
@@ -1032,13 +1029,13 @@ class Function:
         for plugin in plugins:
             load_functions = getattr(plugin, 'load_functions', None)
             if load_functions is not None:
-                node.compiled.update(load_functions(ir_module))
+                node.compiled.update(load_functions(self.ir_module))
 
         f_type = ir.FunctionType(
             ir_signature.return_type,
             tuple(type_ for name, type_ in ir_signature.parameters)
         )
-        ir_function = ir.Function(ir_module, f_type, self.name)
+        ir_function = ir.Function(self.ir_module, f_type, self.name)
 
         # (6) AST pass: structure
         node.globals = self.globals
@@ -1054,7 +1051,6 @@ class Function:
         GenVisitor(verbose).traverse(node)
 
         # (8) IR code
-        self.ir = str(ir_module)
         if verbose:
             print('====== IR ======')
             print(self.ir)
@@ -1070,6 +1066,10 @@ class Function:
 
         # (10) Done
         self.compiled = True
+
+    @property
+    def ir(self):
+        return str(self.ir_module)
 
     @property
     def bc(self):
@@ -1160,7 +1160,6 @@ class LLVM:
             return function
 
         # Called as a decorator
-        signature = py_function
         def wrapper(py_function):
             function = self.fclass(self, py_function, signature, f_globals, optimize)
             if function.can_be_compiled():

@@ -104,7 +104,15 @@ def value_to_ir_value(value, visitor=None):
 # Compound types
 #
 
+class ComplexType:
+
+    def __init__(self, name, ptr):
+        self.name = name
+        self.ptr = ptr
+
+
 class ArrayShape:
+
     def __init__(self, name):
         self.name = name
 
@@ -114,10 +122,7 @@ class ArrayShape:
         return visitor.builder.load(value)
 
 
-class ArrayType:
-    def __init__(self, name, ptr):
-        self.name = name
-        self.ptr = ptr
+class ArrayType(ComplexType):
 
     @property
     def shape(self):
@@ -163,11 +168,7 @@ def Array(dtype, ndim):
     )
 
 
-class StructType:
-
-    def __init__(self, name, ptr):
-        self.name = name
-        self.ptr = ptr
+class StructType(ComplexType):
 
     @classmethod
     def get_body(self):
