@@ -696,11 +696,18 @@ class GenVisitor(NodeVisitor):
         """
         Subscript(expr value, slice slice, expr_context ctx)
         """
+        # An smart object
         subscript = getattr(value, 'subscript', None)
         if subscript is not None:
             return subscript(self, slice, ctx)
 
-        raise NotImplementedError(f'unsupported {ctx} context')
+        # A pointer!
+        if isinstance(value, ir.Value) and value.type.is_pointer:
+            ptr = value
+            ptr = self.builder.gep(ptr, [slice])
+            return self.builder.load(ptr)
+
+        raise NotImplementedError(f'{type(value)} does not support subscript []')
 
     def Tuple_exit(self, node, parent, elts, ctx):
         """
@@ -838,9 +845,12 @@ class GenVisitor(NodeVisitor):
         return self.builder.store(value, ptr)
 
     def Assign_exit(self, node, parent, targets, value):
-        target = targets[0]
-        value = types.value_to_ir_value(value)
+        if len(targets) > 1:
+            raise NotImplementedError(f'unpacking not supported')
 
+        value = types.value_to_ir_value(value, visitor=self)
+
+        target = targets[0]
         if type(target) is str:
             # x =
             name = target

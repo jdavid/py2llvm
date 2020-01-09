@@ -79,14 +79,23 @@ def value_to_ir_type(value):
     return type_to_ir_type(type_)
 
 
-def value_to_ir_value(value):
+def value_to_ir_value(value, visitor=None):
     """
-    If value is already an IR value just return it. If it's a Python value then
-    convert to an IR constant and return it.
+    Return a IR value for the given value, where value may be:
+    - an IR value, then we're done, return it
+    - a special object that knows to return a IR value (duck typing)
+    - a regular Python value, then return a IR constant
     """
     if isinstance(value, ir.Value):
         return value
 
+    # Special object
+    to_ir_value = getattr(value, 'to_ir_value', None)
+    if to_ir_value is not None:
+        assert visitor is not None
+        return to_ir_value(visitor)
+
+    # Regular Python object
     ir_type = value_to_ir_type(value)
     return ir.Constant(ir_type, value)
 
