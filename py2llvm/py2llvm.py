@@ -380,7 +380,8 @@ class BlockVisitor(NodeVisitor):
         for param in root.py_signature.parameters:
             if type(param.type) is type and issubclass(param.type, types.ComplexType):
                 ptr = node.locals.pop(param.name)
-                node.locals[param.name] = param.type(param.name, ptr)
+                var = param.type(param.name, ptr)
+                node.locals.update(var.get_locals())
 
         # Create the second block, this is where the code proper will start,
         # after allocation of the local variables.
@@ -919,12 +920,12 @@ class Function:
         self.py_function = py_function
         self.name = py_function.__name__
 
-        self.signature = self.__get_signature(signature)
+        self.signature = self._get_signature(signature)
         self.compiled = False
         self.globals = f_globals
         self.optimize = optimize
 
-    def __get_signature(self, signature):
+    def _get_signature(self, signature):
         inspect_signature = inspect.signature(self.py_function)
         if signature is not None:
             assert len(signature) == len(inspect_signature.parameters) + 1
@@ -1103,9 +1104,8 @@ class Function:
 
         return value
 
-
     def prepare(self):
-        raise NotImplementedError
+        pass
 
     def call(self, c_args):
         raise NotImplementedError

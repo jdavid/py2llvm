@@ -110,6 +110,9 @@ class ComplexType:
         self.name = name
         self.ptr = ptr
 
+    def get_locals(self):
+        return {self.name: self}
+
 
 class ArrayShape:
 

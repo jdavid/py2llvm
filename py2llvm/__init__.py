@@ -1,3 +1,4 @@
+from .py2llvm import LLVM, Function, Signature, Parameter
 from .py2llvm import llvm
 from .types import float32, float64, void
 from .types import int8, int8p, int16, int32, int64
@@ -13,4 +14,6 @@ __all__ = [
     'int8p',                           # Pointers
     'Array',                           # Arrays
     'StructType', 'Struct',            # Structs
+    # To override behaviour
+    'LLVM', 'Function', 'Signature', 'Parameter',
 ]
