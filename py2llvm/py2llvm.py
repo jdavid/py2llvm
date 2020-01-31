@@ -1210,17 +1210,18 @@ class LLVM:
 
         # Optimize
         if optimize:
-            # With level 1-3 already a number of optimization passes are applied
-            fref = mod.get_function(name)
             pmb = binding.PassManagerBuilder()
-            pmb.opt_level = 3 # 0-3 (default=2)
-            fpm = binding.FunctionPassManager(mod)
-            #fpm.add_sroa_pass()
-            #fpm.add_mem2reg_pass()
-            pmb.populate(fpm)
-            fpm.initialize()
-            fpm.run(fref)
-            fpm.finalize()
+            pmb.opt_level = 2 # 0-3 (default=2)
+            pmb.loop_vectorize = True
+
+            mpm = binding.ModulePassManager()
+            # Needed for automatic vectorization
+            target = binding.Target.from_triple(binding.get_process_triple())
+            tm = target.create_target_machine()
+            tm.add_analysis_passes(mpm)
+
+            pmb.populate(mpm)
+            mpm.run(mod)
 
         # Now add the module and make sure it is ready for execution
         engine.add_module(mod)
