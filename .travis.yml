@@ -2,6 +2,8 @@ dist: bionic
 language: python
 python:
   - "3.7"
+env:
+  - LD_LIBRARY_PATH=~/virtualenv/python3.7/lib
 
 #matrix:
 #  include:
