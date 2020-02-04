@@ -4,10 +4,12 @@ import builtins
 import collections
 import ctypes
 import inspect
+import math
 import operator
 from types import FunctionType
 import typing
 
+# Requirements
 from llvmlite import binding, ir
 
 from . import types
@@ -808,8 +810,8 @@ class GenVisitor(NodeVisitor):
         """
         assert ctx is ast.Load
         value = getattr(value, attr)
-        if callable(value):
-            value = value(self)
+        if isinstance(value, types.Node):
+            value = value.Attribute_exit(self)
 
         if isinstance(value, ir.Value) and value.type.is_pointer:
             value = self.builder.load(value)
@@ -1025,20 +1027,29 @@ class Function:
         else:
             self.rtype = return_type.intrinsic_name
 
-        # (5) The IR module and function
+        # (5) Load functions
         node.compiled = {}
+        ft_f64 = ir.FunctionType(types.float64, (types.float64,))
+        fs = [math.acos, math.asin, math.atan, math.atan2, math.cos, math.cosh,
+              math.sin, math.sinh, math.tan, math.tanh]
+        for f in fs:
+            name = f.__name__
+            node.compiled[f] = ir.Function(self.ir_module, ft_f64, name=name)
+
         for plugin in plugins:
             load_functions = getattr(plugin, 'load_functions', None)
             if load_functions is not None:
                 node.compiled.update(load_functions(self.ir_module))
 
+
+        # (6) The IR module and function
         f_type = ir.FunctionType(
             ir_signature.return_type,
             tuple(type_ for name, type_ in ir_signature.parameters)
         )
         ir_function = ir.Function(self.ir_module, f_type, self.name)
 
-        # (6) AST pass: structure
+        # (7) AST pass: structure
         node.globals = self.globals
         node.py_signature = self.signature
         node.ir_signature = ir_signature
@@ -1047,11 +1058,11 @@ class Function:
         if verbose > 1: print('====== Debug: 1st pass ======')
         BlockVisitor(verbose).traverse(node)
 
-        # (7) AST pass: generate
+        # (8) AST pass: generate
         if verbose > 1: print('====== Debug: 2nd pass ======')
         GenVisitor(verbose).traverse(node)
 
-        # (8) IR code
+        # (9) IR code
         if verbose:
             print('====== IR ======')
             print(self.ir)
@@ -1061,11 +1072,11 @@ class Function:
         address = self.llvm.engine.get_function_address(self.name)
         assert address
 
-        # (9) C function
+        # (10) C function
         self.cfunction_ptr = address
         self.prepare() # prepare libffi to call the function
 
-        # (10) Done
+        # (11) Done
         self.compiled = True
 
     @property
@@ -1239,6 +1250,10 @@ class LLVM:
 binding.initialize()
 binding.initialize_native_target()
 binding.initialize_native_asmprinter()
+
+binding.load_library_permanently("libsvml.so")
+binding.set_option('', '-vector-library=SVML')
+
 
 llvm = LLVM(CTypesFunction)
 

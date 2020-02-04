@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import math
 import numpy as np
 import py2llvm as llvm
 
@@ -29,7 +30,7 @@ print(verbose)
 @llvm.jit(verbose=verbose, optimize=True)
 def f(a1, a2, out):
     for i in range(4000):
-        out[i] = a1[i] + a2[i]
+        out[i] = math.sin(a1[i]) + a2[i]
 
     return 1
 

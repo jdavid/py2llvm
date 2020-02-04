@@ -171,6 +171,25 @@ def Array(dtype, ndim):
     )
 
 
+class Node:
+
+    def Attribute_exit(self, visitor):
+        return self
+
+
+class StructAttrNode(Node):
+
+    def __init__(self, ptr, i):
+        self.ptr = ptr
+        self.i = i
+
+    def Attribute_exit(self, visitor):
+        idx = ir.Constant(int32, self.i)
+        ptr = visitor.builder.load(self.ptr)
+        ptr = visitor.builder.gep(ptr, [zero32, idx])
+        return ptr
+
+
 class StructType(ComplexType):
 
     @classmethod
@@ -189,13 +208,7 @@ class StructType(ComplexType):
         if i is None:
             raise AttributeError(f'Unexpected {attr}')
 
-        def cb(visitor):
-            idx = ir.Constant(int32, i)
-            ptr = visitor.builder.load(self.ptr)
-            ptr = visitor.builder.gep(ptr, [zero32, idx])
-            return ptr
-
-        return cb
+        return StructAttrNode(self.ptr, i)
 
 
 def Struct(name, **kw):

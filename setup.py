@@ -17,7 +17,7 @@ setup(
     name=name,
     packages=[name],
     # Requirements
-    install_requires=['llvmlite', 'numpy'],
+    install_requires=['icc-rt', 'llvmlite', 'numpy'],
     extras_require={
         'test': ['pytest', 'hypothesis'],
     },
