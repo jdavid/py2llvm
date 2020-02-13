@@ -15,7 +15,7 @@ parser.add_argument('-v', '--verbose', action='count', default=0)
 args = parser.parse_args()
 verbose = args.verbose
 
-print(verbose)
+#print(verbose)
 
 #@llvm.jit(verbose=verbose)
 #def f(a1, a2, out):
@@ -28,9 +28,11 @@ print(verbose)
 #    return 1
 
 @llvm.jit(verbose=verbose, optimize=True)
-def f(a1, a2, out):
-    for i in range(4000):
-        out[i] = math.sin(a1[i]) + a2[i]
+def f(out, x, y):
+    n = out.shape[0]
+    for i in range(n):
+        out[i] = (math.sin(x[i]) - 1.35) * (x[i] - 4.45) * (y[i] - 8.5)
+        #out[i] = (x[i] - 1.35) * (x[i] - 4.45) * (x[i] - 8.5)
 
     return 1
 
@@ -42,7 +44,7 @@ a1 = np.array(a1, dtype=np.float64)
 a2 = np.array(a2, dtype=np.float64)
 out = np.empty((4000,), dtype=np.float64)
 
-f(a1, a2, out, verbose=verbose) # COMPILED
+f(out, a1, a2, verbose=verbose) # COMPILED
 print(a1)
 print(a2)
 print(out)

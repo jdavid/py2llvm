@@ -922,12 +922,12 @@ class Function:
         self.py_function = py_function
         self.name = py_function.__name__
 
-        self.signature = self._get_signature(signature)
+        self.py_signature = self.get_py_signature(signature)
         self.compiled = False
         self.globals = f_globals
         self.optimize = optimize
 
-    def _get_signature(self, signature):
+    def get_py_signature(self, signature):
         inspect_signature = inspect.signature(self.py_function)
         if signature is not None:
             assert len(signature) == len(inspect_signature.parameters) + 1
@@ -955,7 +955,7 @@ class Function:
         Return whether we have the argument types, so we can compile the
         function.
         """
-        for name, type_ in self.signature.parameters:
+        for name, type_ in self.py_signature.parameters:
             if type_ is inspect._empty:
                 return False
 
@@ -971,24 +971,24 @@ class Function:
         node = ast.parse(self.py_source)
 
         # (2) Infer return type if not given
-        return_type = self.signature.return_type
+        return_type = self.py_signature.return_type
         if return_type is inspect._empty:
             node.return_type = return_type
             InferVisitor(verbose).traverse(node)
             return_type = node.return_type
-            self.signature.return_type = return_type
+            self.py_signature.return_type = return_type
 
         # (3) The IR signature
         self.ir_module = ir.Module()
         nargs = len(args)
         params = []
-        for i, (name, type_) in enumerate(self.signature.parameters):
+        for i, (name, type_) in enumerate(self.py_signature.parameters):
             # Get type from argument if not given explicitely
             arg = args[i] if i < nargs else None
             if type_ is inspect._empty:
                 assert arg is not None
                 type_ = types.value_to_ir_type(arg)
-                self.signature.parameters[i] = Parameter(name, type_)
+                self.py_signature.parameters[i] = Parameter(name, type_)
 
             # IR signature
             if type(type_) is type and issubclass(type_, types.ArrayType):
@@ -1051,7 +1051,7 @@ class Function:
 
         # (7) AST pass: structure
         node.globals = self.globals
-        node.py_signature = self.signature
+        node.py_signature = self.py_signature
         node.ir_signature = ir_signature
         node.ir_function = ir_function
 
@@ -1227,7 +1227,8 @@ class LLVM:
 
             mpm = binding.ModulePassManager()
             # Needed for automatic vectorization
-            target = binding.Target.from_triple(binding.get_process_triple())
+            triple = binding.get_process_triple()
+            target = binding.Target.from_triple(triple)
             tm = target.create_target_machine()
             tm.add_analysis_passes(mpm)
 
