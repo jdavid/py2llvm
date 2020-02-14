@@ -106,30 +106,34 @@ def value_to_ir_value(value, visitor=None):
 
 class ComplexType:
 
-    def __init__(self, name, ptr):
+    def __init__(self, name, args):
         self.name = name
-        self.ptr = ptr
-
-    def get_locals(self):
-        return {self.name: self}
+        self.ptr = args[name]
 
 
 class ArrayShape:
 
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, shape):
+        self.shape = shape
+
+    def get(self, visitor, n):
+        value = self.shape[n]
+        return visitor.builder.load(value)
 
     def subscript(self, visitor, slice, ctx):
         assert ctx is ast.Load
-        value = visitor.lookup(f'{self.name}_{slice}')
-        return visitor.builder.load(value)
+        return self.get(visitor, slice)
 
 
 class ArrayType(ComplexType):
 
-    @property
-    def shape(self):
-        return ArrayShape(self.name)
+    def __init__(self, name, args):
+        super().__init__(name, args)
+        # Keep a pointer to every dimension
+        prefix = f'{name}_'
+        n = len(prefix)
+        shape = {int(x[n:]): args[x] for x in args if x.startswith(prefix)}
+        self.shape = ArrayShape(shape)
 
     def subscript(self, visitor, slice, ctx):
         # To make it simpler, make the slice to be a list always
@@ -149,8 +153,7 @@ class ArrayType(ComplexType):
             idx = slice.pop(0)
             idx = value_to_ir_value(idx)
             for i in range(dim, self.ndim):
-                dim_len = visitor.lookup(f'{self.name}_{dim}')
-                dim_len = visitor.builder.load(dim_len)
+                dim_len = self.shape.get(visitor, dim)
                 idx = visitor.builder.mul(idx, dim_len)
 
             ptr = visitor.builder.gep(ptr, [idx])

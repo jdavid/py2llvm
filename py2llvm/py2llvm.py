@@ -350,6 +350,10 @@ class BlockVisitor(NodeVisitor):
       blocks). These will be used in the 2nd pass.
     """
 
+    def __init__(self, verbose, function):
+        super().__init__(verbose)
+        self.function = function
+
     def FunctionDef_returns(self, node, parent, returns):
         """
         When we reach this point we have all the function signature: arguments
@@ -370,20 +374,17 @@ class BlockVisitor(NodeVisitor):
         builder = ir.IRBuilder(block_vars)
 
         # Function start: allocate a local variable for every argument
+        args = {}
         for i, param in enumerate(ir_signature.parameters):
             arg = function.args[i]
             assert arg.type is param.type
             ptr = builder.alloca(arg.type, name=param.name)
             builder.store(arg, ptr)
             # Keep Give a name to the arguments, and keep them in local namespace
-            node.locals[param.name] = ptr
+            args[param.name] = ptr
 
-        # Keep an ArrayType instance, actually, so we can resolve .shape[idx]
-        for param in root.py_signature.parameters:
-            if type(param.type) is type and issubclass(param.type, types.ComplexType):
-                ptr = node.locals.pop(param.name)
-                var = param.type(param.name, ptr)
-                node.locals.update(var.get_locals())
+        # XXX Preamble XXX
+        node.locals.update(self.function.get_locals(args))
 
         # Create the second block, this is where the code proper will start,
         # after allocation of the local variables.
@@ -950,26 +951,7 @@ class Function:
 
         return Signature(params, return_type)
 
-    def can_be_compiled(self):
-        """
-        Return whether we have the argument types, so we can compile the
-        function.
-        """
-        for name, type_ in self.py_signature.parameters:
-            if type_ is inspect._empty:
-                return False
-
-        return True
-
-    def compile(self, verbose=0, *args):
-        # (1) Python AST
-        self.py_source = inspect.getsource(self.py_function)
-        if verbose:
-            print('====== Source ======')
-            print(self.py_source)
-
-        node = ast.parse(self.py_source)
-
+    def get_ir_signature(self, node, verbose=0, *args):
         # (2) Infer return type if not given
         return_type = self.py_signature.return_type
         if return_type is inspect._empty:
@@ -979,7 +961,6 @@ class Function:
             self.py_signature.return_type = return_type
 
         # (3) The IR signature
-        self.ir_module = ir.Module()
         nargs = len(args)
         params = []
         for i, (name, type_) in enumerate(self.py_signature.parameters):
@@ -1011,21 +992,58 @@ class Function:
 
         return_type = types.type_to_ir_type(return_type)
         ir_signature = Signature(params, return_type)
+        return ir_signature
+
+    def get_locals(self, args):
+        locals_ = {}
+        for param in self.py_signature.parameters:
+            if type(param.type) is type and issubclass(param.type, types.ComplexType):
+                value = param.type(param.name, args)
+            else:
+                value = args[param.name]
+
+            locals_[param.name] = value
+
+        return locals_
+
+    def can_be_compiled(self):
+        """
+        Return whether we have the argument types, so we can compile the
+        function.
+        """
+        for name, type_ in self.py_signature.parameters:
+            if type_ is inspect._empty:
+                return False
+
+        return True
+
+    def compile(self, verbose=0, *args):
+        # (1) Python AST
+        self.py_source = inspect.getsource(self.py_function)
+        if verbose:
+            print('====== Source ======')
+            print(self.py_source)
+
+        node = ast.parse(self.py_source)
+
+        # (2) IR Signature
+        self.ir_module = ir.Module()
+        ir_signature = self.get_ir_signature(node, verbose, *args)
         self.ir_signature = ir_signature
 
         # (4) For libffi
-        self.nargs = len(params)
-        self.argtypes = [p.type for p in params]
+        self.nargs = len(ir_signature.parameters)
+        self.argtypes = [p.type for p in ir_signature.parameters]
         self.argtypes = [
             ('p' if x.is_pointer else x.intrinsic_name)
             for x in self.argtypes]
 
-        if return_type is types.void:
+        if ir_signature.return_type is types.void:
             self.rtype = ''
-        elif return_type.is_pointer:
+        elif ir_signature.return_type.is_pointer:
             self.rtype = 'p'
         else:
-            self.rtype = return_type.intrinsic_name
+            self.rtype = ir_signature.return_type.intrinsic_name
 
         # (5) Load functions
         node.compiled = {}
@@ -1056,7 +1074,7 @@ class Function:
         node.ir_function = ir_function
 
         if verbose > 1: print('====== Debug: 1st pass ======')
-        BlockVisitor(verbose).traverse(node)
+        BlockVisitor(verbose, self).traverse(node)
 
         # (8) AST pass: generate
         if verbose > 1: print('====== Debug: 2nd pass ======')
