@@ -383,8 +383,16 @@ class BlockVisitor(NodeVisitor):
             # Keep Give a name to the arguments, and keep them in local namespace
             args[param.name] = ptr
 
-        # XXX Preamble XXX
-        node.locals.update(self.function.get_locals(args))
+        # Every Python argument is a local variable
+        locals_ = node.locals
+        for param in self.function.py_signature.parameters:
+            if type(param.type) is type and issubclass(param.type, types.ComplexType):
+                value = param.type(param.name, args)
+                value.preamble(builder) # The params can inject IR at the beginning
+            else:
+                value = args[param.name]
+
+            locals_[param.name] = value
 
         # Create the second block, this is where the code proper will start,
         # after allocation of the local variables.
@@ -917,7 +925,7 @@ class Function:
     ir          -- LLVM's IR code
     """
 
-    def __init__(self, llvm, py_function, signature, f_globals, optimize=False):
+    def __init__(self, llvm, py_function, signature, f_globals, optimize=True):
         assert type(py_function) is FunctionType
         self.llvm = llvm
         self.py_function = py_function
@@ -993,18 +1001,6 @@ class Function:
         return_type = types.type_to_ir_type(return_type)
         ir_signature = Signature(params, return_type)
         return ir_signature
-
-    def get_locals(self, args):
-        locals_ = {}
-        for param in self.py_signature.parameters:
-            if type(param.type) is type and issubclass(param.type, types.ComplexType):
-                value = param.type(param.name, args)
-            else:
-                value = args[param.name]
-
-            locals_[param.name] = value
-
-        return locals_
 
     def can_be_compiled(self):
         """
@@ -1179,7 +1175,7 @@ class LLVM:
         self.dtypes[type_id] = dtype
         return dtype
 
-    def jit(self, py_function=None, signature=None, verbose=0, optimize=False):
+    def jit(self, py_function=None, signature=None, verbose=0, optimize=True):
         f_globals = inspect.stack()[1].frame.f_globals
 
         if type(py_function) is FunctionType:
@@ -1221,7 +1217,7 @@ class LLVM:
         engine = binding.create_mcjit_compiler(backing_mod, target_machine)
         return engine
 
-    def compile_ir(self, llvm_ir, name, verbose, optimize=False):
+    def compile_ir(self, llvm_ir, name, verbose, optimize=True):
         """
         Compile the LLVM IR string with the given engine.
         The compiled module object is returned.
@@ -1253,14 +1249,14 @@ class LLVM:
             pmb.populate(mpm)
             mpm.run(mod)
 
+            if verbose:
+                print('====== IR (optimized) ======')
+                print(mod)
+
         # Now add the module and make sure it is ready for execution
         engine.add_module(mod)
         engine.finalize_object()
         engine.run_static_constructors()
-
-        if verbose:
-            print('====== IR (optimized) ======')
-            print(mod)
 
         return mod
 

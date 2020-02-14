@@ -110,6 +110,9 @@ class ComplexType:
         self.name = name
         self.ptr = args[name]
 
+    def preamble(self, builder):
+        pass
+
 
 class ArrayShape:
 
@@ -135,13 +138,16 @@ class ArrayType(ComplexType):
         shape = {int(x[n:]): args[x] for x in args if x.startswith(prefix)}
         self.shape = ArrayShape(shape)
 
+    def get_ptr(self, visitor):
+        return visitor.builder.load(self.ptr)
+
     def subscript(self, visitor, slice, ctx):
         # To make it simpler, make the slice to be a list always
         if type(slice) is not list:
             slice = [slice]
 
         # Get the pointer to the beginning
-        ptr = visitor.builder.load(self.ptr)
+        ptr = self.get_ptr(visitor)
 
         assert ptr.type.is_pointer
         if isinstance(ptr.type.pointee, ir.ArrayType):
