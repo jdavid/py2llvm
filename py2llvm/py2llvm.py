@@ -331,7 +331,7 @@ class InferVisitor(NodeVisitor):
     explicitely.
     """
 
-    def Assign_exit(self, node, parent, targets, value):
+    def Assign_exit(self, node, parent, targets, value, *args):
         target = targets[0]
         if type(target) is str:
             # x =
