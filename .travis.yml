@@ -2,6 +2,8 @@ dist: bionic
 language: python
 jobs:
   include:
+  - python: 3.6
+    env: LD_LIBRARY_PATH=~/virtualenv/python3.6/lib
   - python: 3.7
     env: LD_LIBRARY_PATH=~/virtualenv/python3.7/lib
   - python: 3.8
