@@ -1,18 +1,11 @@
 dist: bionic
 language: python
-python:
-  - "3.7"
-  - "3.8"
-env:
-  - LD_LIBRARY_PATH=~/virtualenv/python3.7/lib
-
-#matrix:
-#  include:
-#    - name: "Python 3.7 on Windows"
-#      os: windows
-#      language: shell
-#      before_install: choco install python
-#      env: PATH=/c/Python37:/c/Python37/Scripts:$PATH
+jobs:
+  include:
+  - python: 3.7
+    env: LD_LIBRARY_PATH=~/virtualenv/python3.7/lib
+  - python: 3.8
+    env: LD_LIBRARY_PATH=~/virtualenv/python3.8/lib
 
 install:
   - pip install .[test]
