@@ -21,10 +21,4 @@ setup(
     extras_require={
         'test': ['pytest', 'hypothesis'],
     },
-    # Entry points
-    entry_points={
-        'py2llvm_plugins': [
-            'default = py2llvm.default',
-        ],
-    },
 )

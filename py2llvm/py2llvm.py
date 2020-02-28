@@ -80,7 +80,9 @@ def values_to_type(left, right):
 #
 
 LEAFS = {
-    ast.Name, ast.NameConstant, ast.Num,
+    ast.Constant, # 3.8
+    ast.Name,
+    ast.NameConstant, ast.Num, # 3.7
     # boolop
     ast.And, ast.Or,
     # operator
@@ -273,21 +275,31 @@ class NodeVisitor(BaseNodeVisitor):
     def Assign_enter(self, node, parent):
         """
         Assign(expr* targets, expr value)
+        Assign(expr* targets, expr value, string? type_comment) # 3.8
         """
         assert len(node.targets) == 1, 'Unpacking not supported'
 
     #
     # Leaf nodes
     #
+    def Constant_visit(self, node, parent):
+        """
+        Constant(constant value, string? kind)
+        Pythonr 3.8
+        """
+        return node.value
+
     def NameConstant_visit(self, node, parent):
         """
         NameConstant(singleton value)
+        Pythonr 3.7
         """
         return node.value
 
     def Num_visit(self, node, parent):
         """
         Num(object n)
+        Pythonr 3.7
         """
         return node.n
 
@@ -853,7 +865,7 @@ class GenVisitor(NodeVisitor):
 
         return self.builder.store(value, ptr)
 
-    def Assign_exit(self, node, parent, targets, value):
+    def Assign_exit(self, node, parent, targets, value, *args):
         if len(targets) > 1:
             raise NotImplementedError(f'unpacking not supported')
 
@@ -1272,10 +1284,8 @@ binding.set_option('', '-vector-library=SVML')
 
 llvm = LLVM(CTypesFunction)
 
-# Plugins (entry points)
-import pkg_resources
-
+# Plugins
 plugins = []
-for ep in pkg_resources.iter_entry_points(group='py2llvm_plugins'):
-    plugin = ep.load()
-    plugins.append(plugin)
+
+from . import default
+plugins.append(default)
