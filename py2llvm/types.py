@@ -22,6 +22,7 @@ int64 = ir.IntType(64)
 
 # Pointers
 int8p = int8.as_pointer()
+int64p = int64.as_pointer()
 
 # Constants
 zero = ir.Constant(int64, 0)
