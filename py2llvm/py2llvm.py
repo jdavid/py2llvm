@@ -395,11 +395,14 @@ class BlockVisitor(NodeVisitor):
             # Keep Give a name to the arguments, and keep them in local namespace
             args[param.name] = ptr
 
+        # Function preamble
+        self.function.preamble(builder, args)
+
         # Every Python argument is a local variable
         locals_ = node.locals
         for param in self.function.py_signature.parameters:
             if type(param.type) is type and issubclass(param.type, types.ComplexType):
-                value = param.type(param.name, args)
+                value = param.type(self.function, param.name, args)
                 value.preamble(builder) # The params can inject IR at the beginning
             else:
                 value = args[param.name]
@@ -1024,6 +1027,9 @@ class Function:
                 return False
 
         return True
+
+    def preamble(self, builder, args):
+        pass
 
     def compile(self, verbose=0, *args):
         # (1) Python AST

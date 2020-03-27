@@ -107,7 +107,7 @@ def value_to_ir_value(value, visitor=None):
 
 class ComplexType:
 
-    def __init__(self, name, args):
+    def __init__(self, function, name, args):
         self.name = name
         self.ptr = args[name]
 
@@ -131,8 +131,8 @@ class ArrayShape:
 
 class ArrayType(ComplexType):
 
-    def __init__(self, name, args):
-        super().__init__(name, args)
+    def __init__(self, function, name, args):
+        super().__init__(function, name, args)
         # Keep a pointer to every dimension
         prefix = f'{name}_'
         n = len(prefix)
