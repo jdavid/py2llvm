@@ -1253,7 +1253,6 @@ class LLVM:
 
         # Optimize
         if optimize:
-            print("*** PYTHON OPTIMIZE")
             pmb = binding.PassManagerBuilder()
             pmb.opt_level = 2 # 0-3 (default=2)
             pmb.loop_vectorize = True

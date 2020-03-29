@@ -154,7 +154,12 @@ class ArrayType(ComplexType):
         if isinstance(ptr.type.pointee, ir.ArrayType):
             ptr = visitor.builder.gep(ptr, [zero])
 
-        # Support for multidimensional arrays
+        # Support for multidimensional arrays.
+        # Let's we have 3 dimensions (d0, d1, d2), each with a length (dl0,
+        # dl1, dl2). Then the size of the dimensions (ds0, ds1, ds2) is
+        # calculated multiplying the length of the next dimensions, for
+        # example: ds0 = dl1 * dl2
+        # Because we assume the array is stored using the C convention.
         dim = 1
         while slice:
             idx = slice.pop(0)
