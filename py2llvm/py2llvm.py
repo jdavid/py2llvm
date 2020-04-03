@@ -704,11 +704,21 @@ class GenVisitor(NodeVisitor):
         """
         UnaryOp(unaryop op, expr operand)
         """
-        ir_op = {
-            ast.Not: self.builder.not_,
-        }[op]
+        type_ = types.value_to_type(operand)
+        if isinstance(type_, ir.Type):
+            # Python value
+            ops = {
+                ast.Not: self.builder.not_,
+                ast.USub: self.builder.neg,
+            }
+        else:
+            # IR value
+            ops = {
+                ast.Not: operator.not_,
+                ast.USub: operator.neg,
+            }
 
-        return ir_op(operand)
+        return ops[op](operand)
 
     def Index_exit(self, node, parent, value):
         """
