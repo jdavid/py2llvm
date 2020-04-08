@@ -247,6 +247,14 @@ class NodeVisitor(BaseNodeVisitor):
 
         return getattr(builtins, name)
 
+    def load(self, name):
+        value = self.lookup(name)
+        if type(value) is ir.AllocaInstr:
+            if not isinstance(value.type.pointee, ir.Aggregate):
+                return self.builder.load(value)
+
+        return value
+
     def Module_enter(self, node, parent):
         """
         Module(stmt* body)
@@ -530,12 +538,7 @@ class GenVisitor(NodeVisitor):
         ctx = type(node.ctx)
 
         if ctx is ast.Load:
-            value = self.lookup(name)
-            if type(value) is ir.AllocaInstr:
-                if not isinstance(value.type.pointee, ir.Aggregate):
-                    return self.builder.load(value)
-            return value
-
+            return self.load(name)
         elif ctx is ast.Store:
             return name
 
@@ -901,6 +904,15 @@ class GenVisitor(NodeVisitor):
             ptr = target
 
         return self.builder.store(value, ptr)
+
+    def AugAssign_exit(self, node, parent, target, op, value):
+        """
+        AugAssign(expr target, operator op, expr value)
+        """
+        # Translate "a += b" to "a = a + b"
+        left = self.load(target)
+        value = self.BinOp_exit(node, parent, left, op, value) # a + b
+        return self.Assign_exit(node, parent, [target], value) # a =
 
     def Return_enter(self, node, parent):
         self.ltype = self.f_rtype
