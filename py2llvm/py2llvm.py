@@ -435,13 +435,25 @@ class BlockVisitor(NodeVisitor):
         """
         If(expr test, stmt* body, stmt* orelse)
         """
-        node.block_true = self.function.append_basic_block()
+        node.block_true = self.function.append_basic_block('if_true')
 
     def If_body(self, node, parent, body):
-        node.block_false = self.function.append_basic_block()
+        node.block_false = self.function.append_basic_block('if_false')
 
     def If_orelse(self, node, parent, orelse):
-        node.block_next = self.function.append_basic_block()
+        node.block_next = self.function.append_basic_block('if_next')
+
+    def IfExp_test(self, node, parent, test):
+        """
+        IfExp(expr test, expr body, expr orelse)
+        """
+        node.block_true = self.function.append_basic_block('ifexp_true')
+
+    def IfExp_body(self, node, parent, body):
+        node.block_false = self.function.append_basic_block('ifexp_false')
+
+    def IfExp_orelse(self, node, parent, orelse):
+        node.block_next = self.function.append_basic_block('ifexp_next')
 
     def For_enter(self, node, parent):
         """
@@ -610,6 +622,19 @@ class GenVisitor(NodeVisitor):
         node.builder.position_at_end(node.block_vars)
         node.builder.branch(node.block_start)
 
+    def BoolOp_exit(self, node, parent, op, values):
+        """
+        BoolOp(boolop op, expr* values)
+        """
+        ir_op = {
+            ast.And: self.builder.and_,
+            ast.Or: self.builder.or_,
+        }[op]
+
+        assert len(values) == 2
+        left, right = values
+        return ir_op(left, right)
+
     def BinOp_exit(self, node, parent, left, op, right):
         type_ = values_to_type(left, right)
 
@@ -653,6 +678,54 @@ class GenVisitor(NodeVisitor):
 
         return ir_op(left, right)
 
+    def UnaryOp_exit(self, node, parent, op, operand):
+        """
+        UnaryOp(unaryop op, expr operand)
+        """
+        type_ = types.value_to_type(operand)
+        if isinstance(type_, ir.Type):
+            # Python value
+            ops = {
+                ast.Not: self.builder.not_,
+                ast.USub: self.builder.neg,
+            }
+        else:
+            # IR value
+            ops = {
+                ast.Not: operator.not_,
+                ast.USub: operator.neg,
+            }
+
+        return ops[op](operand)
+
+    def IfExp_test(self, node, parent, test):
+        """
+        If(expr test, stmt* body, stmt* orelse)
+        """
+        self.builder.cbranch(test, node.block_true, node.block_false)
+        self.builder.position_at_end(node.block_true)
+
+    def IfExp_body(self, node, parent, body):
+        if not self.builder.block.is_terminated:
+            self.builder.branch(node.block_next)
+        self.builder.position_at_end(node.block_false)
+
+    def IfExp_orelse(self, node, parent, orelse):
+        self.builder.branch(node.block_next)
+        self.builder.position_at_end(node.block_next)
+
+    def IfExp_exit(self, node, parent, test, body, orelse):
+        """
+        IfExp(expr test, expr body, expr orelse)
+        """
+        ltype = types.value_to_type(body)
+        rtype = types.value_to_type(orelse)
+        assert ltype is rtype
+        phi = self.builder.phi(ltype)
+        phi.add_incoming(body, node.block_true)
+        phi.add_incoming(orelse, node.block_false)
+        return phi
+
     def Compare_exit(self, node, parent, left, ops, comparators):
         """
         Compare(expr left, cmpop* ops, expr* comparators)
@@ -689,39 +762,6 @@ class GenVisitor(NodeVisitor):
         base_type = type(type_)
         ir_op = d.get(base_type)
         return ir_op(op, left, right)
-
-    def BoolOp_exit(self, node, parent, op, values):
-        """
-        BoolOp(boolop op, expr* values)
-        """
-        ir_op = {
-            ast.And: self.builder.and_,
-            ast.Or: self.builder.or_,
-        }[op]
-
-        assert len(values) == 2
-        left, right = values
-        return ir_op(left, right)
-
-    def UnaryOp_exit(self, node, parent, op, operand):
-        """
-        UnaryOp(unaryop op, expr operand)
-        """
-        type_ = types.value_to_type(operand)
-        if isinstance(type_, ir.Type):
-            # Python value
-            ops = {
-                ast.Not: self.builder.not_,
-                ast.USub: self.builder.neg,
-            }
-        else:
-            # IR value
-            ops = {
-                ast.Not: operator.not_,
-                ast.USub: operator.neg,
-            }
-
-        return ops[op](operand)
 
     def Index_exit(self, node, parent, value):
         """
