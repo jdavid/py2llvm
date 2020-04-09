@@ -80,25 +80,48 @@ def value_to_ir_type(value):
     return type_to_ir_type(type_)
 
 
-def value_to_ir_value(value, visitor=None):
+def value_to_ir_value(builder, value, type_=None):
     """
-    Return a IR value for the given value, where value may be:
-    - an IR value, then we're done, return it
-    - a special object that knows to return a IR value (duck typing)
-    - a regular Python value, then return a IR constant
+    Return a IR value for the given value, where value may be either a Python
+    or an IR value. If type_ is given the value will be converted to the given
+    type (if necessary).
     """
-    if isinstance(value, ir.Value):
+    if type_ is None:
+        type_ = value_to_ir_type(value)
+
+    # If Python value, return a constant
+    if not isinstance(value, ir.Value):
+        return ir.Constant(type_, value)
+
+    if value.type is type_:
         return value
 
-    # Special object
-    to_ir_value = getattr(value, 'to_ir_value', None)
-    if to_ir_value is not None:
-        assert visitor is not None
-        return to_ir_value(visitor)
+    conversions = {
+        # Integer to float
+        (ir.IntType, ir.FloatType): builder.sitofp,
+        (ir.IntType, ir.DoubleType): builder.sitofp,
+        # Float to integer
+        (ir.FloatType, ir.IntType): builder.fptosi,
+        (ir.DoubleType, ir.IntType): builder.fptosi,
+        # Float to float
+        (ir.FloatType, ir.DoubleType): builder.fpext,
+        (ir.DoubleType, ir.FloatType): builder.fptrunc,
+    }
 
-    # Regular Python object
-    ir_type = value_to_ir_type(value)
-    return ir.Constant(ir_type, value)
+    if isinstance(value.type, ir.IntType) and isinstance(type_, ir.IntType):
+        # Integer to integer
+        if value.type.width < type_.width:
+            conversion = builder.zext
+        else:
+            conversion = builder.trunc
+    else:
+        # To or from float
+        conversion = conversions.get((type(value.type), type(type_)))
+        if conversion is None:
+            err = f'Conversion from {value.type} to {type_} not supported'
+            raise NotImplementedError(err)
+
+    return conversion(value, type_)
 
 
 #
@@ -143,6 +166,8 @@ class ArrayType(ComplexType):
         return visitor.builder.load(self.ptr)
 
     def subscript(self, visitor, slice, ctx):
+        builder = visitor.builder
+
         # To make it simpler, make the slice to be a list always
         if type(slice) is not list:
             slice = [slice]
@@ -152,7 +177,7 @@ class ArrayType(ComplexType):
 
         assert ptr.type.is_pointer
         if isinstance(ptr.type.pointee, ir.ArrayType):
-            ptr = visitor.builder.gep(ptr, [zero])
+            ptr = builder.gep(ptr, [zero])
 
         # Support for multidimensional arrays.
         # Let's we have 3 dimensions (d0, d1, d2), each with a length (dl0,
@@ -163,17 +188,17 @@ class ArrayType(ComplexType):
         dim = 1
         while slice:
             idx = slice.pop(0)
-            idx = value_to_ir_value(idx)
+            idx = value_to_ir_value(builder, idx)
             for i in range(dim, self.ndim):
                 dim_len = self.shape.get(visitor, dim)
-                idx = visitor.builder.mul(idx, dim_len)
+                idx = builder.mul(idx, dim_len)
 
-            ptr = visitor.builder.gep(ptr, [idx])
+            ptr = builder.gep(ptr, [idx])
             dim += 1
 
         # Return the value
         if ctx is ast.Load:
-            return visitor.builder.load(ptr)
+            return builder.load(ptr)
         elif ctx is ast.Store:
             return ptr
 

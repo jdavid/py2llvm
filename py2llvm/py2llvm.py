@@ -17,7 +17,7 @@ from . import types
 
 class Range:
 
-    def __init__(self, *args):
+    def __init__(self, builder, *args):
         start = step = None
 
         # Unpack
@@ -37,9 +37,9 @@ class Range:
             step = ir.Constant(type_, 1)
 
         # Keep IR values
-        self.start = types.value_to_ir_value(start)
-        self.stop = types.value_to_ir_value(stop)
-        self.step = types.value_to_ir_value(step)
+        self.start = types.value_to_ir_value(builder, start)
+        self.stop = types.value_to_ir_value(builder, stop)
+        self.step = types.value_to_ir_value(builder, step)
 
 
 def values_to_type(left, right):
@@ -504,39 +504,7 @@ class GenVisitor(NodeVisitor):
         """
         Return the value converted to the given type.
         """
-        # If Python value, return a constant
-        if not isinstance(value, ir.Value):
-            return ir.Constant(type_, value)
-
-        if value.type is type_:
-            return value
-
-        conversions = {
-            # Integer to float
-            (ir.IntType, ir.FloatType): self.builder.sitofp,
-            (ir.IntType, ir.DoubleType): self.builder.sitofp,
-            # Float to integer
-            (ir.FloatType, ir.IntType): self.builder.fptosi,
-            (ir.DoubleType, ir.IntType): self.builder.fptosi,
-            # Float to float
-            (ir.FloatType, ir.DoubleType): self.builder.fpext,
-            (ir.DoubleType, ir.FloatType): self.builder.fptrunc,
-        }
-
-        if isinstance(value.type, ir.IntType) and isinstance(type_, ir.IntType):
-            # Integer to integer
-            if value.type.width < type_.width:
-                conversion = self.builder.zext
-            else:
-                conversion = self.builder.trunc
-        else:
-            # To or from float
-            conversion = conversions.get((type(value.type), type(type_)))
-            if conversion is None:
-                err = f'Conversion from {value.type} to {type_} not supported'
-                raise NotImplementedError(err)
-
-        return conversion(value, type_)
+        return types.value_to_ir_value(self.builder, value, type_)
 
     #
     # Leaf nodes
@@ -925,7 +893,8 @@ class GenVisitor(NodeVisitor):
         if len(targets) > 1:
             raise NotImplementedError(f'unpacking not supported')
 
-        value = types.value_to_ir_value(value, visitor=self)
+        builder = self.builder
+        value = types.value_to_ir_value(builder, value)
 
         target = targets[0]
         if type(target) is str:
@@ -934,16 +903,16 @@ class GenVisitor(NodeVisitor):
             try:
                 ptr = self.lookup(name)
             except AttributeError:
-                block_cur = self.builder.block
-                self.builder.position_at_end(self.block_vars)
-                ptr = self.builder.alloca(value.type, name=name)
-                self.builder.position_at_end(block_cur)
+                block_cur = builder.block
+                builder.position_at_end(self.block_vars)
+                ptr = builder.alloca(value.type, name=name)
+                builder.position_at_end(block_cur)
                 self.locals[name] = ptr
         else:
             # x[i] =
             ptr = target
 
-        return self.builder.store(value, ptr)
+        return builder.store(value, ptr)
 
     def AugAssign_exit(self, node, parent, target, op, value):
         """
@@ -975,7 +944,7 @@ class GenVisitor(NodeVisitor):
         """
         assert not keywords
         if func is range:
-            return Range(*args)
+            return Range(self.builder, *args)
 
         func = self.root.compiled.get(func, func)
         return self.builder.call(func, args)

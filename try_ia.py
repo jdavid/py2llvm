@@ -72,9 +72,10 @@ class params_type_inputs:
         self.typs = typs
 
     def subscript(self, visitor, slice, ctx):
+        builder = visitor.builder
         typ = self.typs[slice]
-        idx = types.value_to_ir_value(slice)
-        ptr = visitor.builder.gep(self.ptr, [types.zero, idx])
+        idx = types.value_to_ir_value(builder, slice)
+        ptr = builder.gep(self.ptr, [types.zero, idx])
         return params_type_input(ptr, typ)
 
 class params_type_out:
